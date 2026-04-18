@@ -6,14 +6,17 @@ import { calcTax, calcTaxCH, grossNeededForNetCH } from '@/lib/tax'
 import {
   retirementAgeForScenario,
   calcSensitivity,
+  calcPortfolioTrajectory,
   swrForHorizon,
   solveForPMT,
   RETURN_RATES,
   type SensitivityPoint,
+  type TrajectoryPoint,
 } from '@/lib/fire'
 import { fetchUsdToEur, usdToEur } from '@/lib/fx'
 
 const SensitivityChart = dynamic(() => import('@/components/SensitivityChart'), { ssr: false })
+const PortfolioTrajectoryChart = dynamic(() => import('@/components/PortfolioTrajectoryChart'), { ssr: false })
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 const fmt = (n: number, dec = 0) =>
@@ -365,7 +368,28 @@ export default function Home() {
   const [currentAge, setCurrentAge] = useLS('lf/currentAge', 26)
   const [targetAge, setTargetAge] = useLS('lf/targetAge', 30)
   const [lifeExpectancy, setLifeExpectancy] = useLS('lf/lifeExpectancy', 90)
-  const [portfolioEur, setPortfolioEur] = useLS('lf/portfolioEur', 30000)
+
+  // Portfolio allocation — per asset class
+  const [goldEur, setGoldEur] = useLS('lf/goldEur', 0)
+  const [silverEur, setSilverEur] = useLS('lf/silverEur', 0)
+  const [sp500Eur, setSp500Eur] = useLS('lf/sp500Eur', 0)
+  const [valueEtfEur, setValueEtfEur] = useLS('lf/valueEtfEur', 0)
+  const [momentumEtfEur, setMomentumEtfEur] = useLS('lf/momentumEtfEur', 0)
+  const [qualityEtfEur, setQualityEtfEur] = useLS('lf/qualityEtfEur', 0)
+  const [smallCapEtfEur, setSmallCapEtfEur] = useLS('lf/smallCapEtfEur', 0)
+
+  const equityEur = sp500Eur + valueEtfEur + momentumEtfEur + qualityEtfEur + smallCapEtfEur
+  const portfolioEur = goldEur + silverEur + equityEur
+
+  // Blended real return: equity → scenario rate; gold → 0%; silver → −0.5%
+  const blendedReturns = useMemo<Record<'bear' | 'base' | 'bull', number>>(() => {
+    if (portfolioEur === 0) return RETURN_RATES
+    const w = (rate: number) =>
+      equityEur / portfolioEur * rate +
+      goldEur   / portfolioEur * 0 +
+      silverEur / portfolioEur * (-0.005)
+    return { bear: w(RETURN_RATES.bear), base: w(RETURN_RATES.base), bull: w(RETURN_RATES.bull) }
+  }, [portfolioEur, equityEur, goldEur, silverEur])
 
   // Income
   const [grossUsd, setGrossUsd] = useLS('lf/grossUsd', 3700)
@@ -406,7 +430,6 @@ export default function Home() {
       if (patch.targetAge      != null) setTargetAge(nextTargetAge)
       if (patch.lifeExpectancy != null) setLifeExpectancy(nextLifeExpectancy)
     }
-    if (patch.portfolioEur            != null) setPortfolioEur(Math.max(0, patch.portfolioEur))
     if (patch.grossUsd                != null) setGrossUsd(Math.max(0, patch.grossUsd))
     if (patch.postCitizenshipGrossUsd != null) setPostCitizenshipGrossUsd(Math.max(0, patch.postCitizenshipGrossUsd))
     if (patch.rent                    != null) setRent(Math.max(0, patch.rent))
@@ -484,22 +507,44 @@ export default function Home() {
 
   // Retirement ages all 3 scenarios
   const retirementAges = useMemo(() => ({
-    bear: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, 'bear'),
-    base: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, 'base'),
-    bull: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, 'bull'),
-  }), [currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate])
+    bear: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns.bear),
+    base: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns.base),
+    bull: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns.bull),
+  }), [currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns])
 
   const currentRetirementAge = retirementAges[scenario]
   const gapYears = +(currentRetirementAge - targetAge).toFixed(1)
 
   // PMT needed to hit target age
   const monthsToTarget = Math.max(0, (targetAge - currentAge) * 12)
-  const pmt = solveForPMT(fireNumber, portfolioEur, RETURN_RATES[scenario], monthsToTarget)
+  const pmt = solveForPMT(fireNumber, portfolioEur, blendedReturns[scenario], monthsToTarget)
 
   // Required gross (Swiss employed model, post-citizenship)
   const requiredNetMonthly = pmt + totalFixedExpenses
   const requiredGrossEur = grossNeededForNetCH(requiredNetMonthly)
   const requiredGrossUsd = fxRate > 0 ? requiredGrossEur / 12 / fxRate : 0
+
+  // ─── Portfolio trajectory chart data ─────────────────────────────────────
+  const trajectoryData = useMemo<TrajectoryPoint[]>(() => {
+    const maxAge = Math.min(lifeExpectancy, Math.max(targetAge, currentRetirementAge) + 5)
+    return calcPortfolioTrajectory(
+      currentAge,
+      maxAge,
+      portfolioEur,
+      monthlySavings,
+      postCitizenshipSavings,
+      citizenshipDate,
+      blendedReturns,
+    )
+  }, [currentAge, lifeExpectancy, targetAge, currentRetirementAge, portfolioEur, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns])
+
+  const citizenshipAge = useMemo(() => {
+    const now = new Date()
+    const monthsUntilCitizenship =
+      (citizenshipDate.getFullYear() - now.getFullYear()) * 12 +
+      (citizenshipDate.getMonth() - now.getMonth())
+    return Math.round((currentAge + monthsUntilCitizenship / 12) * 10) / 10
+  }, [currentAge, citizenshipDate])
 
   // ─── Sensitivity chart data ───────────────────────────────────────────────
   const sensitivityData = useMemo<SensitivityPoint[]>(() => {
@@ -520,8 +565,10 @@ export default function Home() {
       citizenshipDate,
       postMultiplier,
       [1000, 12000],
+      40,
+      blendedReturns,
     )
-  }, [currentAge, portfolioEur, annualExpenses, lifeExpectancy, fxRate, deductibleExpenses, isFirstYear, isSecondYear, tithePercent, rent, foodUtils, familySupport, discretionary, annualIrregular, grossUsd, postCitizenshipGrossUsd, citizenshipDate])
+  }, [currentAge, portfolioEur, annualExpenses, lifeExpectancy, fxRate, deductibleExpenses, isFirstYear, isSecondYear, tithePercent, rent, foodUtils, familySupport, discretionary, annualIrregular, grossUsd, postCitizenshipGrossUsd, citizenshipDate, blendedReturns])
 
   // ─── render ───────────────────────────────────────────────────────────────
   return (
@@ -543,7 +590,40 @@ export default function Home() {
               <NumInput label="Current age" value={currentAge} onChange={setCurrentAge} suffix="yrs" highlighted={highlightedFields.has('currentAge')} />
               <NumInput label="Target retirement age" value={targetAge} onChange={setTargetAge} suffix="yrs" highlighted={highlightedFields.has('targetAge')} />
               <NumInput label="Life expectancy" value={lifeExpectancy} onChange={setLifeExpectancy} suffix="yrs" highlighted={highlightedFields.has('lifeExpectancy')} />
-              <NumInput label="Portfolio (EUR)" value={portfolioEur} onChange={setPortfolioEur} prefix="€" step={500} highlighted={highlightedFields.has('portfolioEur')} />
+            </Section>
+
+            <Section title="Portfolio allocation" id="portfolio">
+              <div className="col-span-2 -mb-1 text-xs text-gray-500">
+                Gold 0% · Silver −0.5% real return. Equity uses scenario rate.
+              </div>
+              <NumInput label="Gold (SGLD)" value={goldEur} onChange={setGoldEur} prefix="€" step={500} />
+              <NumInput label="Silver (ISLN)" value={silverEur} onChange={setSilverEur} prefix="€" step={100} />
+              <NumInput label="S&P 500" value={sp500Eur} onChange={setSp500Eur} prefix="€" step={500} />
+              <NumInput label="IS3S · Value" value={valueEtfEur} onChange={setValueEtfEur} prefix="€" step={500} />
+              <NumInput label="IWMO · Momentum" value={momentumEtfEur} onChange={setMomentumEtfEur} prefix="€" step={500} />
+              <NumInput label="IWQU · Quality" value={qualityEtfEur} onChange={setQualityEtfEur} prefix="€" step={500} />
+              <NumInput label="IUSN · Small Cap" value={smallCapEtfEur} onChange={setSmallCapEtfEur} prefix="€" step={500} />
+              <div className="col-span-2 mt-1 pt-2 border-t border-gray-800 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-400">Total</span>
+                  <span className="text-white font-medium tabular">{fmtEur(portfolioEur)}</span>
+                </div>
+                {portfolioEur > 0 && (
+                  <>
+                    <div className="h-2 flex rounded overflow-hidden gap-px">
+                      {equityEur > 0 && <div className="bg-blue-500" style={{ width: `${equityEur / portfolioEur * 100}%` }} />}
+                      {goldEur > 0 && <div className="bg-amber-400" style={{ width: `${goldEur / portfolioEur * 100}%` }} />}
+                      {silverEur > 0 && <div className="bg-gray-400" style={{ width: `${silverEur / portfolioEur * 100}%` }} />}
+                    </div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-gray-500">
+                      {equityEur > 0 && <span><span className="text-blue-400">■</span> Equity {(equityEur / portfolioEur * 100).toFixed(0)}%</span>}
+                      {goldEur > 0 && <span><span className="text-amber-400">■</span> Gold {(goldEur / portfolioEur * 100).toFixed(0)}%</span>}
+                      {silverEur > 0 && <span><span className="text-gray-400">■</span> Silver {(silverEur / portfolioEur * 100).toFixed(0)}%</span>}
+                      <span className="ml-auto text-gray-600">Blended ({scenario}): {(blendedReturns[scenario] * 100).toFixed(1)}%</span>
+                    </div>
+                  </>
+                )}
+              </div>
             </Section>
 
             <Section title="Income (USD)" id="income">
@@ -718,6 +798,7 @@ export default function Home() {
                   ['FIRE number', fmtEur(fireNumber)],
                   [`SWR (${retirementHorizon}yr horizon)`, `${(swr * 100).toFixed(2)}%`],
                   ['Current portfolio', fmtEur(portfolioEur)],
+                  ['Blended real return', `${(blendedReturns[scenario] * 100).toFixed(1)}%`],
                   ['Retirement expenses/yr', fmtEur(annualExpenses)],
                   ['Floor obligation/yr', fmtEur(floorAnnual)],
                   ['Floor FIRE number', fmtEur(floorFireNumber)],
@@ -779,6 +860,20 @@ export default function Home() {
               <span className="text-white">{fmtEur(floorFireNumber)}</span>. Everything above covers discretionary.
             </div>
           </div>
+        </div>
+
+        {/* Portfolio trajectory — full width */}
+        <div className="mt-6 border border-gray-700 rounded-lg p-4 bg-gray-900/40">
+          <p className="text-xs text-gray-500 uppercase tracking-wide mb-4">Portfolio trajectory over time (all scenarios)</p>
+          <PortfolioTrajectoryChart
+            data={trajectoryData}
+            fireNumber={fireNumber}
+            targetAge={targetAge}
+            citizenshipAge={citizenshipAge}
+          />
+          <p className="text-xs text-gray-600 mt-2 text-center">
+            Green dashed = FIRE number · Yellow = target age · Purple = citizenship inflection
+          </p>
         </div>
 
         {/* Sensitivity chart — full width */}

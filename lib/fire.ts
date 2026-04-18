@@ -162,7 +162,8 @@ export function calcSensitivity(
   citizenshipDate: Date,
   postCitizenshipIncomeMultiplier: number,
   grossRange: [number, number],
-  steps = 40
+  steps = 40,
+  returnOverrides?: Partial<Record<ReturnScenario, number>>
 ): SensitivityPoint[] {
   const [minGross, maxGross] = grossRange
   const points: SensitivityPoint[] = []
@@ -171,7 +172,7 @@ export function calcSensitivity(
     const grossUsd = minGross + (i / steps) * (maxGross - minGross)
 
     const getRetirementAge = (scenario: ReturnScenario): number => {
-      const annualReturn = RETURN_RATES[scenario]
+      const annualReturn = returnOverrides?.[scenario] ?? RETURN_RATES[scenario]
       const monthlySavings = netSavingsFromGross(grossUsd)
       const postSavings = netSavingsFromGross(grossUsd * postCitizenshipIncomeMultiplier)
 
@@ -219,7 +220,52 @@ export function calcSensitivity(
   return points
 }
 
-// Compute retirement age under current inputs (all 3 scenarios)
+// Portfolio trajectory: yearly snapshots from currentAge to maxAge
+export interface TrajectoryPoint {
+  age: number
+  bear: number
+  base: number
+  bull: number
+}
+
+export function calcPortfolioTrajectory(
+  currentAge: number,
+  maxAge: number,
+  currentPortfolioEur: number,
+  preCitizenshipMonthlySavings: number,
+  postCitizenshipMonthlySavings: number,
+  citizenshipDate: Date,
+  returnRates: Record<ReturnScenario, number>
+): TrajectoryPoint[] {
+  const now = new Date()
+  const monthsPreCitizenship = Math.max(
+    0,
+    (citizenshipDate.getFullYear() - now.getFullYear()) * 12 +
+      (citizenshipDate.getMonth() - now.getMonth())
+  )
+
+  const points: TrajectoryPoint[] = []
+  for (let age = currentAge; age <= maxAge; age++) {
+    const totalMonths = Math.round((age - currentAge) * 12)
+    const preMonths = Math.min(totalMonths, monthsPreCitizenship)
+    const postMonths = Math.max(0, totalMonths - preMonths)
+
+    const calc = (rate: number) => {
+      const atCit = futureValue(currentPortfolioEur, preCitizenshipMonthlySavings, rate, preMonths)
+      return futureValue(atCit, postCitizenshipMonthlySavings, rate, postMonths)
+    }
+
+    points.push({
+      age,
+      bear: Math.round(calc(returnRates.bear)),
+      base: Math.round(calc(returnRates.base)),
+      bull: Math.round(calc(returnRates.bull)),
+    })
+  }
+  return points
+}
+
+// Compute retirement age under current inputs
 export function retirementAgeForScenario(
   currentAgeYears: number,
   currentPortfolioEur: number,
@@ -228,9 +274,8 @@ export function retirementAgeForScenario(
   preCitizenshipMonthlySavings: number,
   postCitizenshipMonthlySavings: number,
   citizenshipDate: Date,
-  scenario: ReturnScenario
+  annualReturn: number
 ): number {
-  const annualReturn = RETURN_RATES[scenario]
   const now = new Date()
   const monthsPreCitizenship = Math.max(
     0,
