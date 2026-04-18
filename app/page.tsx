@@ -182,6 +182,10 @@ type CalcPatch = {
   retirementFoodUtils?: number
   retirementFamilySupport?: number
   retirementDiscretionary?: number
+  chRent?: number
+  chFoodUtils?: number
+  chHealthInsurance?: number
+  chDiscretionary?: number
 }
 
 const PATCH_SCHEMA = {
@@ -207,6 +211,10 @@ const PATCH_SCHEMA = {
     retirementFoodUtils:      { type: 'number' },
     retirementFamilySupport:  { type: 'number' },
     retirementDiscretionary:  { type: 'number' },
+    chRent:                   { type: 'number' },
+    chFoodUtils:              { type: 'number' },
+    chHealthInsurance:        { type: 'number' },
+    chDiscretionary:          { type: 'number' },
   },
   additionalProperties: false,
 } as const
@@ -220,12 +228,14 @@ Output ONLY a JSON object with the fields that should change, using these exact 
 currentAge, targetAge, lifeExpectancy, portfolioEur, grossUsd, postCitizenshipGrossUsd,
 rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular,
 deductibleExpenses, isFirstYear, isSecondYear, scenario,
-retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary.
+retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary,
+chRent, chFoodUtils, chHealthInsurance, chDiscretionary.
 Only include fields explicitly mentioned. Omit everything else. No explanation, no markdown, just JSON.
 scenario must be "bear", "base", or "bull". isFirstYear/isSecondYear are booleans.
 All money values are numbers (no currency symbols). annualIrregular is yearly total.
 retirementRent/retirementFoodUtils/retirementFamilySupport/retirementDiscretionary are
-expenses expected at retirement (cheaper location), used for the FIRE number.`
+expenses expected at retirement (cheaper location), used for the FIRE number.
+chRent/chFoodUtils/chHealthInsurance/chDiscretionary are expenses while working in Switzerland.`
 
 type EngineStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -407,6 +417,12 @@ export default function Home() {
   const [annualIrregular, setAnnualIrregular] = useLS('lf/annualIrregular', 0)
   const [deductibleExpenses, setDeductibleExpenses] = useLS('lf/deductibleExpenses', 1200)
 
+  // Working expenses (EUR/month) — Phase 2 Switzerland
+  const [chRent, setChRent] = useLS('lf/chRent', 1500)
+  const [chFoodUtils, setChFoodUtils] = useLS('lf/chFoodUtils', 500)
+  const [chHealthInsurance, setChHealthInsurance] = useLS('lf/chHealthInsurance', 400)
+  const [chDiscretionary, setChDiscretionary] = useLS('lf/chDiscretionary', 100)
+
   // Retirement expenses (EUR/month) — used for FIRE number
   const [retirementRent, setRetirementRent] = useLS('lf/retirementRent', 300)
   const [retirementFoodUtils, setRetirementFoodUtils] = useLS('lf/retirementFoodUtils', 200)
@@ -445,6 +461,10 @@ export default function Home() {
     if (patch.retirementFoodUtils     != null) setRetirementFoodUtils(Math.max(0, patch.retirementFoodUtils))
     if (patch.retirementFamilySupport != null) setRetirementFamilySupport(Math.max(0, patch.retirementFamilySupport))
     if (patch.retirementDiscretionary != null) setRetirementDiscretionary(Math.max(0, patch.retirementDiscretionary))
+    if (patch.chRent                  != null) setChRent(Math.max(0, patch.chRent))
+    if (patch.chFoodUtils             != null) setChFoodUtils(Math.max(0, patch.chFoodUtils))
+    if (patch.chHealthInsurance       != null) setChHealthInsurance(Math.max(0, patch.chHealthInsurance))
+    if (patch.chDiscretionary         != null) setChDiscretionary(Math.max(0, patch.chDiscretionary))
     if (patch.isFirstYear != null || patch.isSecondYear != null) {
       const f = patch.isFirstYear  ?? false
       const s = patch.isSecondYear ?? false
@@ -488,8 +508,8 @@ export default function Home() {
   const postCitizenshipNet = postCitizenshipTax.netMonthly
   const postCitizenshipTithe = postCitizenshipNet * (tithePercent / 100)
   const postCitizenshipSavings = useMemo(
-    () => postCitizenshipNet - rent - foodUtils - familySupport - postCitizenshipTithe - discretionary - annualIrregular / 12,
-    [postCitizenshipNet, rent, foodUtils, familySupport, postCitizenshipTithe, discretionary, annualIrregular]
+    () => postCitizenshipNet - chRent - chFoodUtils - chHealthInsurance - chDiscretionary - familySupport - postCitizenshipTithe - (annualIrregular / 12),
+    [postCitizenshipNet, chRent, chFoodUtils, chHealthInsurance, chDiscretionary, familySupport, postCitizenshipTithe, annualIrregular]
   )
 
   // ─── 36-month plan simulations ───────────────────────────────────────────
@@ -546,7 +566,7 @@ export default function Home() {
   const pmt = solveForPMT(fireNumber, planSims[scenario][36].totalPortfolio, postPlanBlendedReturns[scenario], monthsAfterPlan)
 
   // Required gross (Swiss employed model, post-citizenship)
-  const requiredNetMonthly = pmt + totalFixedExpenses
+  const requiredNetMonthly = pmt + chRent + chFoodUtils + chHealthInsurance + chDiscretionary + familySupport + postCitizenshipTithe + (annualIrregular / 12)
   const requiredGrossEur = grossNeededForNetCH(requiredNetMonthly)
   const requiredGrossUsd = fxRate > 0 ? requiredGrossEur / 12 / fxRate : 0
 
@@ -685,7 +705,7 @@ export default function Home() {
               </div>
             </Section>
 
-            <Section title="Working expenses (EUR/mo)" id="working-expenses">
+            <Section title="Working expenses: Phase 1 (Spain)" id="working-expenses">
               <NumInput label="Rent" value={rent} onChange={setRent} prefix="€" highlighted={highlightedFields.has('rent')} />
               <NumInput label="Food + utilities" value={foodUtils} onChange={setFoodUtils} prefix="€" highlighted={highlightedFields.has('foodUtils')} />
               <NumInput label="Family support (Rosario)" value={familySupport} onChange={setFamilySupport} prefix="€" highlighted={highlightedFields.has('familySupport')} />
@@ -694,14 +714,24 @@ export default function Home() {
               <NumInput label="Annual irregular (÷12)" hint="Travel, gifts, repairs — yearly total" value={annualIrregular} onChange={setAnnualIrregular} prefix="€/yr" step={100} highlighted={highlightedFields.has('annualIrregular')} />
             </Section>
 
-            <Section title="Retirement expenses (EUR/mo)" id="retirement-expenses">
-              <div className="col-span-2 -mb-1 text-xs text-gray-500">
-                What you&apos;ll spend after FIRE (cheapest safe location). Sets the FIRE number.
+            <Section title="Working expenses: Phase 2 (Switzerland)" id="ch-working-expenses">
+              <NumInput label="Rent (Zurich)" value={chRent} onChange={setChRent} prefix="€" highlighted={highlightedFields.has('chRent')} />
+              <NumInput label="Food + utilities" value={chFoodUtils} onChange={setChFoodUtils} prefix="€" highlighted={highlightedFields.has('chFoodUtils')} />
+              <NumInput label="Health Insurance" hint="Mandatory KVG" value={chHealthInsurance} onChange={setChHealthInsurance} prefix="€" highlighted={highlightedFields.has('chHealthInsurance')} />
+              <NumInput label="Discretionary" value={chDiscretionary} onChange={setChDiscretionary} prefix="€" highlighted={highlightedFields.has('chDiscretionary')} />
+              <div className="col-span-2 text-xs text-gray-600">
+                Shared: Family support {fmtEur(familySupport)}, Tithe {tithePercent}%, Irregular {fmtEur(annualIrregular/12)}
               </div>
-              <NumInput label="Rent" value={retirementRent} onChange={setRetirementRent} prefix="€" highlighted={highlightedFields.has('retirementRent')} />
+            </Section>
+
+            <Section title="Retirement: Phase 3 (Minimalist)" id="retirement-expenses">
+              <div className="col-span-2 -mb-1 text-xs text-gray-500">
+                Post-FIRE ascetic lifestyle in a safe, low-cost location. Sets your FIRE number.
+              </div>
+              <NumInput label="Rent (Target location)" value={retirementRent} onChange={setRetirementRent} prefix="€" highlighted={highlightedFields.has('retirementRent')} />
               <NumInput label="Food + utilities" value={retirementFoodUtils} onChange={setRetirementFoodUtils} prefix="€" highlighted={highlightedFields.has('retirementFoodUtils')} />
               <NumInput label="Family support" value={retirementFamilySupport} onChange={setRetirementFamilySupport} prefix="€" highlighted={highlightedFields.has('retirementFamilySupport')} />
-              <NumInput label="Discretionary" value={retirementDiscretionary} onChange={setRetirementDiscretionary} prefix="€" highlighted={highlightedFields.has('retirementDiscretionary')} />
+              <NumInput label="Discretionary (Ascetic)" value={retirementDiscretionary} onChange={setRetirementDiscretionary} prefix="€" highlighted={highlightedFields.has('retirementDiscretionary')} />
             </Section>
 
             <Section title="Tax & assumptions" id="tax-assumptions" defaultOpen={false}>
