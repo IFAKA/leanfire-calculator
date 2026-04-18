@@ -19,6 +19,7 @@ import { fetchUsdToEur, usdToEur } from '@/lib/fx'
 
 const SensitivityChart = dynamic(() => import('@/components/SensitivityChart'), { ssr: false })
 const PortfolioTrajectoryChart = dynamic(() => import('@/components/PortfolioTrajectoryChart'), { ssr: false })
+const PlanCompositionChart = dynamic(() => import('@/components/PlanCompositionChart'), { ssr: false })
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 const fmt = (n: number, dec = 0) =>
@@ -436,6 +437,9 @@ export default function Home() {
   // Return scenario
   const [scenario, setScenario] = useLS<'bear' | 'base' | 'bull'>('lf/scenario', 'base')
 
+  // 36-month plan tracking
+  const [currentPlanMonth, setCurrentPlanMonth] = useLS('lf/currentPlanMonth', 1)
+
   const [highlightedFields, setHighlightedFields] = useState<Set<string>>(new Set())
 
   // ─── NL patch handler ─────────────────────────────────────────────────────
@@ -581,6 +585,31 @@ export default function Home() {
       citizenshipDate,
     )
   }, [currentAge, lifeExpectancy, planSims, monthlySavings, postCitizenshipSavings, citizenshipDate])
+
+  // ─── Buy order for current plan month ─────────────────────────────────────
+  const buyOrder = useMemo(() => {
+    const m = currentPlanMonth
+    const pmt = m > (citizenshipDate.getFullYear() - new Date().getFullYear()) * 12 + (citizenshipDate.getMonth() - new Date().getMonth())
+      ? postCitizenshipSavings
+      : monthlySavings
+    
+    if (m <= 12) {
+      return [{ asset: 'IS3S (Value)', amount: pmt }]
+    } else if (m <= 24) {
+      return [
+        { asset: 'IS3S (Value)', amount: pmt * 0.5 },
+        { asset: 'IWMO (Momentum)', amount: pmt * 0.25 },
+        { asset: 'IWQU (Quality)', amount: pmt * 0.25 },
+      ]
+    } else {
+      return [
+        { asset: 'IS3S (Value)', amount: pmt * 0.4 },
+        { asset: 'IWMO (Momentum)', amount: pmt * 0.3 },
+        { asset: 'IWQU (Quality)', amount: pmt * 0.2 },
+        { asset: 'IUSN (Small Cap)', amount: pmt * 0.1 },
+      ]
+    }
+  }, [currentPlanMonth, monthlySavings, postCitizenshipSavings, citizenshipDate])
 
   const citizenshipAge = useMemo(() => {
     const now = new Date()
@@ -928,6 +957,80 @@ export default function Home() {
           <p className="text-xs text-gray-600 mt-2 text-center">
             Green dashed = FIRE number · Yellow = target age · Purple = citizenship inflection
           </p>
+        </div>
+
+        {/* 36-Month Plan Execution — full width */}
+        <div className="mt-6 border border-blue-900/30 rounded-lg p-5 bg-blue-950/10 card-shadow">
+          <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white">36-Month Strategy Execution</h2>
+              <p className="text-xs text-gray-500">Month-by-month portfolio shift & actionable buy orders</p>
+            </div>
+            <div className="flex items-center gap-3 bg-gray-900/60 p-2 rounded-lg border border-gray-800">
+              <label htmlFor="plan-month" className="text-xs font-medium text-gray-400 uppercase">Current Month</label>
+              <input
+                id="plan-month"
+                type="number"
+                min="1"
+                max="36"
+                value={currentPlanMonth}
+                onChange={(e) => setCurrentPlanMonth(Math.max(1, Math.min(36, Number(e.target.value))))}
+                className="w-12 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm text-white outline-none focus:border-blue-500 transition-colors"
+              />
+              <input
+                type="range"
+                min="1"
+                max="36"
+                value={currentPlanMonth}
+                onChange={(e) => setCurrentPlanMonth(Number(e.target.value))}
+                className="w-32 accent-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            <div className="xl:col-span-2">
+              <PlanCompositionChart data={planSims[scenario]} />
+              <p className="text-xs text-gray-600 mt-4 text-center">
+                Visualizing the transition from Gold/Silver to the Phased Equity Strategy (M1-36)
+              </p>
+            </div>
+            <div className="flex flex-col gap-4">
+              <div className="border border-emerald-900/50 rounded-lg p-4 bg-emerald-950/20">
+                <p className="text-xs text-emerald-400 uppercase tracking-wide mb-3 font-semibold">Next Buy Order (Month {currentPlanMonth})</p>
+                <div className="space-y-3">
+                  {buyOrder.map((item, i) => (
+                    <div key={i} className="flex justify-between items-center pb-2 border-b border-emerald-900/20 last:border-0 last:pb-0">
+                      <span className="text-sm text-gray-300">{item.asset}</span>
+                      <span className="text-lg font-bold text-white tabular">{fmtEur(item.amount)}</span>
+                    </div>
+                  ))}
+                  <div className="pt-2 mt-2 border-t border-emerald-900/30 flex justify-between items-center">
+                    <span className="text-xs text-emerald-500 font-medium">Total Investment</span>
+                    <span className="text-sm font-semibold text-emerald-300">{fmtEur(buyOrder.reduce((acc, curr) => acc + curr.amount, 0))}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border border-gray-800 rounded-lg p-4 bg-gray-900/40">
+                <p className="text-xs text-gray-400 uppercase tracking-wide mb-3">Milestone Actions</p>
+                <div className="space-y-2 text-xs">
+                  <div className={`flex items-start gap-2 ${currentPlanMonth >= 13 ? 'text-emerald-400 line-through opacity-50' : 'text-gray-300'}`}>
+                    <span className="mt-0.5">●</span>
+                    <span>Month 13: Sell all Silver (ISLN) and reinvest 100% into IS3S.</span>
+                  </div>
+                  <div className={`flex items-start gap-2 ${currentPlanMonth >= 25 ? 'text-emerald-400 line-through opacity-50' : 'text-gray-300'}`}>
+                    <span className="mt-0.5">●</span>
+                    <span>Month 25: Sell €2,500 Gold (SGLD) and reinvest into Phase 3 split.</span>
+                  </div>
+                  <div className={`flex items-start gap-2 ${currentPlanMonth >= 36 ? 'text-emerald-400' : 'text-gray-500'}`}>
+                    <span className="mt-0.5">●</span>
+                    <span>Month 36: Plan complete. Maintain 40/30/20/10 split on all new savings.</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Sensitivity chart — full width */}
