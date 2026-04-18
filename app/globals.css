@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #030712;
+  --foreground: #f9fafb;
 }
 
 @theme inline {
@@ -12,15 +12,68 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Tabular nums for all financial data */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Focus visible — keyboard users get rings, pointer users don't */
+:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Remove default focus for pointer interactions */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Prevent iOS double-tap zoom on interactive controls */
+button,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Input font size ≥16px on mobile to prevent iOS Safari auto-zoom */
+@media (max-width: 768px) {
+  input[type="number"],
+  input[type="text"] {
+    font-size: 16px;
+  }
+}
+
+/* Layered card shadow (ambient + direct light) */
+.card-shadow {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    0 1px 3px rgba(0, 0, 0, 0.4),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Scrollbar matches dark theme */
+* {
+  scrollbar-color: #374151 transparent;
+  scrollbar-width: thin;
 }
