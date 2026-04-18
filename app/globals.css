@@ -72,6 +72,16 @@ textarea {
     0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
+/* NL patch flash — briefly highlights updated fields */
+@keyframes nl-flash {
+  0%   { border-color: #f59e0b; box-shadow: 0 0 0 1px #f59e0b44; }
+  60%  { border-color: #f59e0b; box-shadow: 0 0 0 1px #f59e0b44; }
+  100% { border-color: #374151; box-shadow: none; }
+}
+.nl-flash {
+  animation: nl-flash 600ms ease-out forwards;
+}
+
 /* Scrollbar matches dark theme */
 * {
   scrollbar-color: #374151 transparent;

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useId, useRef, useCallback } from 'react'
 import dynamic from 'next/dynamic'
-import { calcTax, grossNeededForNet } from '@/lib/tax'
+import { calcTax, calcTaxCH, grossNeededForNetCH } from '@/lib/tax'
 import {
   retirementAgeForScenario,
   calcSensitivity,
@@ -22,6 +22,29 @@ const fmt = (n: number, dec = 0) =>
 const fmtEur = (n: number, dec = 0) => `€${fmt(n, dec)}`
 const fmtUsd = (n: number, dec = 0) => `$${fmt(n, dec)}`
 
+function useLS<T>(key: string, init: T): [T, (v: T | ((prev: T) => T)) => void] {
+  const [val, setValInner] = useState<T>(() => {
+    if (typeof window === 'undefined') return init
+    try {
+      const stored = localStorage.getItem(key)
+      return stored !== null ? (JSON.parse(stored) as T) : init
+    } catch {
+      return init
+    }
+  })
+  const setVal = useCallback(
+    (v: T | ((prev: T) => T)) => {
+      setValInner(prev => {
+        const next = typeof v === 'function' ? (v as (p: T) => T)(prev) : v
+        try { localStorage.setItem(key, JSON.stringify(next)) } catch {}
+        return next
+      })
+    },
+    [key],
+  )
+  return [val, setVal]
+}
+
 function NumInput({
   label,
   hint,
@@ -31,6 +54,7 @@ function NumInput({
   suffix,
   step = 1,
   min = 0,
+  highlighted = false,
 }: {
   label: string
   hint?: string
@@ -40,6 +64,7 @@ function NumInput({
   suffix?: string
   step?: number
   min?: number
+  highlighted?: boolean
 }) {
   const id = useId()
   const [local, setLocal] = useState(() => String(value))
@@ -53,8 +78,8 @@ function NumInput({
     <div className="flex flex-col gap-1">
       <label htmlFor={id} className="text-xs text-gray-400">{label}</label>
       {hint && <span className="text-xs text-gray-600 -mt-0.5">{hint}</span>}
-      <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 focus-within:border-gray-500 transition-[border-color]">
-        {prefix && <span className="text-gray-500 text-sm" aria-hidden>{prefix}</span>}
+      <div className={`flex items-center gap-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 focus-within:border-gray-500 transition-[border-color]${highlighted ? ' nl-flash' : ''}`}>
+        {prefix && <span className="text-gray-500 text-sm shrink-0" aria-hidden>{prefix}</span>}
         <input
           id={id}
           type="number"
@@ -81,18 +106,43 @@ function NumInput({
           }}
           className="bg-transparent text-white text-sm w-full outline-none tabular min-w-0"
         />
-        {suffix && <span className="text-gray-500 text-sm" aria-hidden>{suffix}</span>}
+        {suffix && <span className="text-gray-500 text-sm shrink-0 whitespace-nowrap" aria-hidden>{suffix}</span>}
       </div>
     </div>
   )
 }
 
-function Section({ title, children, defaultOpen = true }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen)
+function Section({
+  title,
+  id,
+  children,
+  defaultOpen = true,
+}: {
+  title: string
+  id: string
+  children: React.ReactNode
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(() => {
+    if (typeof window === 'undefined') return defaultOpen
+    try {
+      const s = localStorage.getItem(`lf/section/${id}`)
+      return s !== null ? (JSON.parse(s) as boolean) : defaultOpen
+    } catch {
+      return defaultOpen
+    }
+  })
+
+  const toggle = () => {
+    const next = !open
+    setOpen(next)
+    try { localStorage.setItem(`lf/section/${id}`, JSON.stringify(next)) } catch {}
+  }
+
   return (
     <div className="border border-gray-700 rounded-lg overflow-hidden card-shadow">
       <button
-        onClick={() => setOpen(!open)}
+        onClick={toggle}
         aria-expanded={open}
         className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-800/60 text-sm font-medium text-gray-200 hover:bg-gray-700/60 transition-[background-color]"
       >
@@ -123,6 +173,10 @@ type CalcPatch = {
   isFirstYear?: boolean
   isSecondYear?: boolean
   scenario?: 'bear' | 'base' | 'bull'
+  retirementRent?: number
+  retirementFoodUtils?: number
+  retirementFamilySupport?: number
+  retirementDiscretionary?: number
 }
 
 const PATCH_SCHEMA = {
@@ -144,21 +198,29 @@ const PATCH_SCHEMA = {
     isFirstYear:              { type: 'boolean' },
     isSecondYear:             { type: 'boolean' },
     scenario:                 { type: 'string', enum: ['bear', 'base', 'bull'] },
+    retirementRent:           { type: 'number' },
+    retirementFoodUtils:      { type: 'number' },
+    retirementFamilySupport:  { type: 'number' },
+    retirementDiscretionary:  { type: 'number' },
   },
   additionalProperties: false,
 } as const
 
 const MODEL_ID = 'Llama-3.1-8B-Instruct-q4f16_1-MLC'
+const WEBLLM_CACHE_KEY = `webllm-cached-${MODEL_ID}`
 
 const SYSTEM_PROMPT = `You are a JSON patch extractor for a LeanFIRE retirement calculator.
 The user will describe changes to their financial situation in plain language.
 Output ONLY a JSON object with the fields that should change, using these exact keys:
 currentAge, targetAge, lifeExpectancy, portfolioEur, grossUsd, postCitizenshipGrossUsd,
 rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular,
-deductibleExpenses, isFirstYear, isSecondYear, scenario.
+deductibleExpenses, isFirstYear, isSecondYear, scenario,
+retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary.
 Only include fields explicitly mentioned. Omit everything else. No explanation, no markdown, just JSON.
 scenario must be "bear", "base", or "bull". isFirstYear/isSecondYear are booleans.
-All money values are numbers (no currency symbols). annualIrregular is yearly total.`
+All money values are numbers (no currency symbols). annualIrregular is yearly total.
+retirementRent/retirementFoodUtils/retirementFamilySupport/retirementDiscretionary are
+expenses expected at retirement (cheaper location), used for the FIRE number.`
 
 type EngineStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -169,6 +231,7 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
   const [input, setInput] = useState('')
   const [processing, setProcessing] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
+  const didAutoLoad = useRef(false)
 
   const loadEngine = useCallback(async () => {
     if (engineRef.current || status === 'loading') return
@@ -183,12 +246,23 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
       })
       await engine.reload(MODEL_ID)
       engineRef.current = engine
+      try { localStorage.setItem(WEBLLM_CACHE_KEY, '1') } catch {}
       setStatus('ready')
     } catch (e) {
       setLastError(e instanceof Error ? e.message : String(e))
       setStatus('error')
     }
   }, [status])
+
+  // Auto-load from browser cache if previously downloaded
+  useEffect(() => {
+    if (!didAutoLoad.current && typeof window !== 'undefined' && localStorage.getItem(WEBLLM_CACHE_KEY)) {
+      didAutoLoad.current = true
+      loadEngine()
+    }
+  // loadEngine is stable on mount (status='idle'); intentional single-fire
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleSubmit = async () => {
     if (!input.trim() || processing) return
@@ -232,7 +306,7 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
           </button>
         )}
         {status === 'loading' && (
-          <span className="text-xs text-gray-500">Loading model… {loadProgress}%</span>
+          <span className="text-xs text-gray-500">Loading… {loadProgress}%</span>
         )}
         {status === 'ready' && (
           <span className="text-xs text-emerald-500">Ready</span>
@@ -279,45 +353,51 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
 // ─── main ──────────────────────────────────────────────────────────────────
 export default function Home() {
   // FX
-  const [fxRate, setFxRate] = useState(0.92)
-  const [fxManual, setFxManual] = useState(false)
+  const [fxRate, setFxRate] = useLS('lf/fxRate', 0.848449)
+  const [fxManual, setFxManual] = useLS('lf/fxManual', false)
 
   useEffect(() => {
-    if (!fxManual) {
-      fetchUsdToEur().then(setFxRate)
-    }
+    if (!fxManual) fetchUsdToEur().then(setFxRate)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fxManual])
 
   // Current state
-  const [currentAge, setCurrentAge] = useState(25)
-  const [targetAge, setTargetAge] = useState(30)
-  const [lifeExpectancy, setLifeExpectancy] = useState(90)
-  const [portfolioEur, setPortfolioEur] = useState(8000)
+  const [currentAge, setCurrentAge] = useLS('lf/currentAge', 26)
+  const [targetAge, setTargetAge] = useLS('lf/targetAge', 30)
+  const [lifeExpectancy, setLifeExpectancy] = useLS('lf/lifeExpectancy', 90)
+  const [portfolioEur, setPortfolioEur] = useLS('lf/portfolioEur', 30000)
 
   // Income
-  const [grossUsd, setGrossUsd] = useState(3700)
-  const [postCitizenshipGrossUsd, setPostCitizenshipGrossUsd] = useState(6000)
-  const citizenshipDate = useMemo(() => new Date(2026, 9, 1), []) // Oct 2026
+  const [grossUsd, setGrossUsd] = useLS('lf/grossUsd', 3700)
+  const [postCitizenshipGrossUsd, setPostCitizenshipGrossUsd] = useLS('lf/postCitizenshipGrossUsd', 10000)
+  const citizenshipDate = useMemo(() => new Date(2026, 9, 1), [])
 
-  // Expenses (EUR/month)
-  const [rent, setRent] = useState(600)
-  const [foodUtils, setFoodUtils] = useState(400)
-  const [familySupport, setFamilySupport] = useState(300)
-  const [tithePercent, setTithePercent] = useState(10)
-  const [discretionary, setDiscretionary] = useState(200)
-  const [annualIrregular, setAnnualIrregular] = useState(1200) // per year
-  const [deductibleExpenses, setDeductibleExpenses] = useState(1200) // per year
+  // Working expenses (EUR/month) — used for savings calculation
+  const [rent, setRent] = useLS('lf/rent', 620)
+  const [foodUtils, setFoodUtils] = useLS('lf/foodUtils', 200)
+  const [familySupport, setFamilySupport] = useLS('lf/familySupport', 350)
+  const [tithePercent, setTithePercent] = useLS('lf/tithePercent', 0)
+  const [discretionary, setDiscretionary] = useLS('lf/discretionary', 0)
+  const [annualIrregular, setAnnualIrregular] = useLS('lf/annualIrregular', 0)
+  const [deductibleExpenses, setDeductibleExpenses] = useLS('lf/deductibleExpenses', 1200)
 
-  // Tax flags
-  const [isFirstYear, setIsFirstYear] = useState(false)
-  const [isSecondYear, setIsSecondYear] = useState(false)
+  // Retirement expenses (EUR/month) — used for FIRE number
+  const [retirementRent, setRetirementRent] = useLS('lf/retirementRent', 300)
+  const [retirementFoodUtils, setRetirementFoodUtils] = useLS('lf/retirementFoodUtils', 200)
+  const [retirementFamilySupport, setRetirementFamilySupport] = useLS('lf/retirementFamilySupport', 350)
+  const [retirementDiscretionary, setRetirementDiscretionary] = useLS('lf/retirementDiscretionary', 0)
+
+  // Tax flags (autónomo pre-citizenship only)
+  const [isFirstYear, setIsFirstYear] = useLS('lf/isFirstYear', false)
+  const [isSecondYear, setIsSecondYear] = useLS('lf/isSecondYear', false)
 
   // Return scenario
-  const [scenario, setScenario] = useState<'bear' | 'base' | 'bull'>('base')
+  const [scenario, setScenario] = useLS<'bear' | 'base' | 'bull'>('lf/scenario', 'base')
+
+  const [highlightedFields, setHighlightedFields] = useState<Set<string>>(new Set())
 
   // ─── NL patch handler ─────────────────────────────────────────────────────
   const handleNLPatch = useCallback((patch: CalcPatch) => {
-    // Resolve ages as a set first to validate invariant before applying any
     const nextCurrentAge     = patch.currentAge     != null ? Math.round(patch.currentAge)     : currentAge
     const nextTargetAge      = patch.targetAge      != null ? Math.round(patch.targetAge)      : targetAge
     const nextLifeExpectancy = patch.lifeExpectancy != null ? Math.round(patch.lifeExpectancy) : lifeExpectancy
@@ -326,17 +406,20 @@ export default function Home() {
       if (patch.targetAge      != null) setTargetAge(nextTargetAge)
       if (patch.lifeExpectancy != null) setLifeExpectancy(nextLifeExpectancy)
     }
-    if (patch.portfolioEur             != null) setPortfolioEur(Math.max(0, patch.portfolioEur))
-    if (patch.grossUsd                 != null) setGrossUsd(Math.max(0, patch.grossUsd))
-    if (patch.postCitizenshipGrossUsd  != null) setPostCitizenshipGrossUsd(Math.max(0, patch.postCitizenshipGrossUsd))
-    if (patch.rent                     != null) setRent(Math.max(0, patch.rent))
-    if (patch.foodUtils                != null) setFoodUtils(Math.max(0, patch.foodUtils))
-    if (patch.familySupport            != null) setFamilySupport(Math.max(0, patch.familySupport))
-    if (patch.tithePercent             != null) setTithePercent(Math.max(0, Math.min(100, patch.tithePercent)))
-    if (patch.discretionary            != null) setDiscretionary(Math.max(0, patch.discretionary))
-    if (patch.annualIrregular          != null) setAnnualIrregular(Math.max(0, patch.annualIrregular))
-    if (patch.deductibleExpenses       != null) setDeductibleExpenses(Math.max(0, patch.deductibleExpenses))
-    // Mutual exclusivity: isFirstYear wins if both arrive as true
+    if (patch.portfolioEur            != null) setPortfolioEur(Math.max(0, patch.portfolioEur))
+    if (patch.grossUsd                != null) setGrossUsd(Math.max(0, patch.grossUsd))
+    if (patch.postCitizenshipGrossUsd != null) setPostCitizenshipGrossUsd(Math.max(0, patch.postCitizenshipGrossUsd))
+    if (patch.rent                    != null) setRent(Math.max(0, patch.rent))
+    if (patch.foodUtils               != null) setFoodUtils(Math.max(0, patch.foodUtils))
+    if (patch.familySupport           != null) setFamilySupport(Math.max(0, patch.familySupport))
+    if (patch.tithePercent            != null) setTithePercent(Math.max(0, Math.min(100, patch.tithePercent)))
+    if (patch.discretionary           != null) setDiscretionary(Math.max(0, patch.discretionary))
+    if (patch.annualIrregular         != null) setAnnualIrregular(Math.max(0, patch.annualIrregular))
+    if (patch.deductibleExpenses      != null) setDeductibleExpenses(Math.max(0, patch.deductibleExpenses))
+    if (patch.retirementRent          != null) setRetirementRent(Math.max(0, patch.retirementRent))
+    if (patch.retirementFoodUtils     != null) setRetirementFoodUtils(Math.max(0, patch.retirementFoodUtils))
+    if (patch.retirementFamilySupport != null) setRetirementFamilySupport(Math.max(0, patch.retirementFamilySupport))
+    if (patch.retirementDiscretionary != null) setRetirementDiscretionary(Math.max(0, patch.retirementDiscretionary))
     if (patch.isFirstYear != null || patch.isSecondYear != null) {
       const f = patch.isFirstYear  ?? false
       const s = patch.isSecondYear ?? false
@@ -347,17 +430,18 @@ export default function Home() {
     if (patch.scenario != null && ['bear', 'base', 'bull'].includes(patch.scenario)) {
       setScenario(patch.scenario)
     }
-    // fxRate and fxManual are intentionally never touched
+    const changed = new Set(Object.keys(patch).filter(k => (patch as Record<string, unknown>)[k] != null))
+    setHighlightedFields(changed)
+    setTimeout(() => setHighlightedFields(new Set()), 600)
   }, [currentAge, targetAge, lifeExpectancy])
 
-  // ─── derived: tax + net income ───────────────────────────────────────────
+  // ─── derived: tax + net income (Spain autónomo, pre-citizenship) ──────────
   const taxResult = useMemo(() => {
     const grossEurAnnual = usdToEur(grossUsd * 12, fxRate)
     return calcTax({ grossAnnualEur: grossEurAnnual, deductibleExpenses, isFirstYear, isSecondYear })
   }, [grossUsd, fxRate, deductibleExpenses, isFirstYear, isSecondYear])
 
   const netMonthlyEur = taxResult.netMonthly
-
   const titheMonthly = useMemo(() => netMonthlyEur * (tithePercent / 100), [netMonthlyEur, tithePercent])
 
   const totalFixedExpenses = useMemo(
@@ -370,11 +454,11 @@ export default function Home() {
     [netMonthlyEur, totalFixedExpenses]
   )
 
-  // Post-citizenship savings
+  // Post-citizenship: Swiss employed tax (no autónomo cuota)
   const postCitizenshipTax = useMemo(() => {
     const grossEurAnnual = usdToEur(postCitizenshipGrossUsd * 12, fxRate)
-    return calcTax({ grossAnnualEur: grossEurAnnual, deductibleExpenses, isFirstYear: false, isSecondYear: false })
-  }, [postCitizenshipGrossUsd, fxRate, deductibleExpenses])
+    return calcTaxCH({ grossAnnualEur: grossEurAnnual })
+  }, [postCitizenshipGrossUsd, fxRate])
 
   const postCitizenshipNet = postCitizenshipTax.netMonthly
   const postCitizenshipTithe = postCitizenshipNet * (tithePercent / 100)
@@ -383,14 +467,18 @@ export default function Home() {
     [postCitizenshipNet, rent, foodUtils, familySupport, postCitizenshipTithe, discretionary, annualIrregular]
   )
 
-  // ─── FIRE number + gap ───────────────────────────────────────────────────
-  const annualExpenses = useMemo(() => totalFixedExpenses * 12, [totalFixedExpenses])
+  // ─── FIRE number uses retirement expenses (cheaper location) ─────────────
+  const retirementMonthly = useMemo(
+    () => retirementRent + retirementFoodUtils + retirementFamilySupport + retirementDiscretionary,
+    [retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary]
+  )
+  const annualExpenses = retirementMonthly * 12
   const retirementHorizon = lifeExpectancy - targetAge
   const swr = swrForHorizon(retirementHorizon)
   const fireNumber = annualExpenses / swr
 
-  // Floor: non-negotiable at retirement (family + essentials, no discretionary)
-  const floorMonthly = rent + foodUtils + familySupport + titheMonthly
+  // Floor at retirement (no discretionary)
+  const floorMonthly = retirementRent + retirementFoodUtils + retirementFamilySupport
   const floorAnnual = floorMonthly * 12
   const floorFireNumber = floorAnnual / swr
 
@@ -408,9 +496,9 @@ export default function Home() {
   const monthsToTarget = Math.max(0, (targetAge - currentAge) * 12)
   const pmt = solveForPMT(fireNumber, portfolioEur, RETURN_RATES[scenario], monthsToTarget)
 
-  // Gross income needed to fund required PMT
+  // Required gross (Swiss employed model, post-citizenship)
   const requiredNetMonthly = pmt + totalFixedExpenses
-  const requiredGrossEur = grossNeededForNet(requiredNetMonthly, deductibleExpenses, isFirstYear, isSecondYear)
+  const requiredGrossEur = grossNeededForNetCH(requiredNetMonthly)
   const requiredGrossUsd = fxRate > 0 ? requiredGrossEur / 12 / fxRate : 0
 
   // ─── Sensitivity chart data ───────────────────────────────────────────────
@@ -442,7 +530,7 @@ export default function Home() {
         <div className="mb-6">
           <h1 className="text-xl font-semibold text-white">LeanFIRE Calculator</h1>
           <p className="text-xs text-gray-500 mt-0.5">
-            Quant-correct model · SWR adjusted for 60yr horizon · Spain autónomo tax · USD/EUR dual-currency
+            Quant-correct model · SWR adjusted for horizon · Spain autónomo → Switzerland employed · USD/EUR dual-currency
           </p>
         </div>
 
@@ -450,16 +538,25 @@ export default function Home() {
           {/* ─── LEFT: INPUTS ─────────────────────────────────────────────── */}
           <div className="flex flex-col gap-4">
             <NLPromptBar onPatch={handleNLPatch} />
-            <Section title="Current state">
-              <NumInput label="Current age" value={currentAge} onChange={setCurrentAge} suffix="yrs" />
-              <NumInput label="Target retirement age" value={targetAge} onChange={setTargetAge} suffix="yrs" />
-              <NumInput label="Life expectancy" value={lifeExpectancy} onChange={setLifeExpectancy} suffix="yrs" />
-              <NumInput label="Portfolio (EUR)" value={portfolioEur} onChange={setPortfolioEur} prefix="€" step={500} />
+
+            <Section title="Current state" id="current-state">
+              <NumInput label="Current age" value={currentAge} onChange={setCurrentAge} suffix="yrs" highlighted={highlightedFields.has('currentAge')} />
+              <NumInput label="Target retirement age" value={targetAge} onChange={setTargetAge} suffix="yrs" highlighted={highlightedFields.has('targetAge')} />
+              <NumInput label="Life expectancy" value={lifeExpectancy} onChange={setLifeExpectancy} suffix="yrs" highlighted={highlightedFields.has('lifeExpectancy')} />
+              <NumInput label="Portfolio (EUR)" value={portfolioEur} onChange={setPortfolioEur} prefix="€" step={500} highlighted={highlightedFields.has('portfolioEur')} />
             </Section>
 
-            <Section title="Income (USD)">
-              <NumInput label="Monthly gross (now)" value={grossUsd} onChange={setGrossUsd} prefix="$" step={100} />
-              <NumInput label="Monthly gross (post-citizenship)" hint="Expected salary after Oct 2026 citizenship" value={postCitizenshipGrossUsd} onChange={setPostCitizenshipGrossUsd} prefix="$" step={100} />
+            <Section title="Income (USD)" id="income">
+              <NumInput label="Monthly gross (now)" value={grossUsd} onChange={setGrossUsd} prefix="$" step={100} highlighted={highlightedFields.has('grossUsd')} />
+              <NumInput
+                label="Monthly gross (post-citizenship)"
+                hint="Salary you'll aim to negotiate after Oct 2026"
+                value={postCitizenshipGrossUsd}
+                onChange={setPostCitizenshipGrossUsd}
+                prefix="$"
+                step={100}
+                highlighted={highlightedFields.has('postCitizenshipGrossUsd')}
+              />
               <div className="flex flex-col gap-1 col-span-2">
                 <label htmlFor="fx-rate" className="text-xs text-gray-400">USD/EUR Rate</label>
                 <div className="flex items-center gap-2">
@@ -480,21 +577,31 @@ export default function Home() {
                     Refresh Rate
                   </button>
                 </div>
-                <p className="text-xs text-gray-600">Citizenship inflection: Oct 2026</p>
+                <p className="text-xs text-gray-600">Citizenship inflection: Oct 2026 · Swiss employed tax applies after</p>
               </div>
             </Section>
 
-            <Section title="Monthly expenses (EUR)">
-              <NumInput label="Rent" value={rent} onChange={setRent} prefix="€" />
-              <NumInput label="Food + utilities" value={foodUtils} onChange={setFoodUtils} prefix="€" />
-              <NumInput label="Family support (Rosario)" value={familySupport} onChange={setFamilySupport} prefix="€" />
-              <NumInput label="Tithe" value={tithePercent} onChange={setTithePercent} suffix="% of net" step={1} />
-              <NumInput label="Discretionary" hint="Going out, hobbies, misc" value={discretionary} onChange={setDiscretionary} prefix="€" />
-              <NumInput label="Annual irregular (÷12)" hint="Travel, gifts, repairs — yearly total smoothed monthly" value={annualIrregular} onChange={setAnnualIrregular} prefix="€/yr" step={100} />
+            <Section title="Working expenses (EUR/mo)" id="working-expenses">
+              <NumInput label="Rent" value={rent} onChange={setRent} prefix="€" highlighted={highlightedFields.has('rent')} />
+              <NumInput label="Food + utilities" value={foodUtils} onChange={setFoodUtils} prefix="€" highlighted={highlightedFields.has('foodUtils')} />
+              <NumInput label="Family support (Rosario)" value={familySupport} onChange={setFamilySupport} prefix="€" highlighted={highlightedFields.has('familySupport')} />
+              <NumInput label="Tithe" hint="% of net income" value={tithePercent} onChange={setTithePercent} suffix="%" step={1} highlighted={highlightedFields.has('tithePercent')} />
+              <NumInput label="Discretionary" hint="Going out, hobbies, misc" value={discretionary} onChange={setDiscretionary} prefix="€" highlighted={highlightedFields.has('discretionary')} />
+              <NumInput label="Annual irregular (÷12)" hint="Travel, gifts, repairs — yearly total" value={annualIrregular} onChange={setAnnualIrregular} prefix="€/yr" step={100} highlighted={highlightedFields.has('annualIrregular')} />
             </Section>
 
-            <Section title="Tax & assumptions" defaultOpen={false}>
-              <NumInput label="Deductible expenses/yr" hint="Business costs that reduce your taxable income" value={deductibleExpenses} onChange={setDeductibleExpenses} prefix="€/yr" step={100} />
+            <Section title="Retirement expenses (EUR/mo)" id="retirement-expenses">
+              <div className="col-span-2 -mb-1 text-xs text-gray-500">
+                What you&apos;ll spend after FIRE (cheapest safe location). Sets the FIRE number.
+              </div>
+              <NumInput label="Rent" value={retirementRent} onChange={setRetirementRent} prefix="€" highlighted={highlightedFields.has('retirementRent')} />
+              <NumInput label="Food + utilities" value={retirementFoodUtils} onChange={setRetirementFoodUtils} prefix="€" highlighted={highlightedFields.has('retirementFoodUtils')} />
+              <NumInput label="Family support" value={retirementFamilySupport} onChange={setRetirementFamilySupport} prefix="€" highlighted={highlightedFields.has('retirementFamilySupport')} />
+              <NumInput label="Discretionary" value={retirementDiscretionary} onChange={setRetirementDiscretionary} prefix="€" highlighted={highlightedFields.has('retirementDiscretionary')} />
+            </Section>
+
+            <Section title="Tax & assumptions" id="tax-assumptions" defaultOpen={false}>
+              <NumInput label="Deductible expenses/yr" hint="Business costs that reduce your taxable income" value={deductibleExpenses} onChange={setDeductibleExpenses} prefix="€/yr" step={100} highlighted={highlightedFields.has('deductibleExpenses')} />
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-gray-400">Autónomo year</label>
                 <div className="flex gap-2">
@@ -611,7 +718,7 @@ export default function Home() {
                   ['FIRE number', fmtEur(fireNumber)],
                   [`SWR (${retirementHorizon}yr horizon)`, `${(swr * 100).toFixed(2)}%`],
                   ['Current portfolio', fmtEur(portfolioEur)],
-                  ['Annual expenses', fmtEur(annualExpenses)],
+                  ['Retirement expenses/yr', fmtEur(annualExpenses)],
                   ['Floor obligation/yr', fmtEur(floorAnnual)],
                   ['Floor FIRE number', fmtEur(floorFireNumber)],
                 ].map(([label, value]) => (
@@ -625,7 +732,7 @@ export default function Home() {
 
             {/* Tax breakdown */}
             <div className="border border-gray-700 rounded-lg p-4 bg-gray-900/40">
-              <p className="text-xs text-gray-500 uppercase tracking-wide mb-3">Tax Breakdown (Current Income)</p>
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Tax Breakdown — Current (Spain autónomo)</p>
               <div className="space-y-1.5 text-sm">
                 {[
                   ['Gross Income', fmtEur(taxResult.grossAnnual / 12) + '/mo'],
@@ -643,13 +750,31 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+              <div className="mt-3 pt-3 border-t border-gray-800">
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Post-citizenship (Switzerland employed)</p>
+                <div className="space-y-1.5 text-sm">
+                  {[
+                    ['Gross Income', fmtEur(postCitizenshipTax.grossAnnual / 12) + '/mo'],
+                    ['Social Insurance (6.4%)', fmtEur(postCitizenshipTax.cuotaAnnual / 12) + '/mo'],
+                    ['Income Tax', fmtEur(postCitizenshipTax.irpfAnnual / 12) + '/mo'],
+                    ['Net Take-Home', fmtEur(postCitizenshipNet) + '/mo'],
+                    ['Effective Rate', `${(postCitizenshipTax.effectiveRate * 100).toFixed(1)}%`],
+                    ['Net Savings (post-cit.)', fmtEur(postCitizenshipSavings) + '/mo'],
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex justify-between">
+                      <span className="text-gray-500">{label}</span>
+                      <span className={`font-medium tabular ${label === 'Net Savings (post-cit.)' && postCitizenshipSavings < 0 ? 'text-red-400' : 'text-gray-200'}`}>{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Floor note */}
             <div className="border border-gray-800 rounded-lg p-3 bg-gray-950/50 text-xs text-gray-500">
               <span className="text-gray-400 font-medium">Withdrawal strategy: </span>
-              Floor-and-upside hybrid. Your non-negotiable floor is{' '}
-              <span className="text-white">{fmtEur(floorMonthly)}/mo</span> (rent + food + family + tithe).
+              Floor-and-upside hybrid. Non-negotiable floor at retirement:{' '}
+              <span className="text-white">{fmtEur(floorMonthly)}/mo</span> (rent + food + family).
               Portfolio covers floor at {(swr * 100).toFixed(2)}% SWR → needs{' '}
               <span className="text-white">{fmtEur(floorFireNumber)}</span>. Everything above covers discretionary.
             </div>
