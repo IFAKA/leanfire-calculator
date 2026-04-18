@@ -2,6 +2,209 @@
 
 export type ReturnScenario = 'bear' | 'base' | 'bull'
 
+// ─── 36-month investment plan simulation ─────────────────────────────────────
+
+export interface PlanAssets {
+  goldEur: number
+  silverEur: number
+  sp500Eur: number
+  valueEtfEur: number    // IS3S
+  momentumEtfEur: number // IWMO
+  qualityEtfEur: number  // IWQU
+  smallCapEtfEur: number // IUSN
+}
+
+export interface PlanMonthSnapshot {
+  month: number
+  assets: PlanAssets
+  totalPortfolio: number
+  blendedReturn: number // annualized real
+}
+
+const GOLD_REAL = 0
+const SILVER_REAL = -0.005
+const PLAN_GOLD_SALE_EUR = 2500 // mid-point of €2k–3k range, at start of phase 3
+
+function _assetsTotal(a: PlanAssets): number {
+  return a.goldEur + a.silverEur + a.sp500Eur + a.valueEtfEur + a.momentumEtfEur + a.qualityEtfEur + a.smallCapEtfEur
+}
+
+function _blendedReturn(a: PlanAssets, equityRate: number): number {
+  const total = _assetsTotal(a)
+  if (total === 0) return equityRate
+  const equity = a.sp500Eur + a.valueEtfEur + a.momentumEtfEur + a.qualityEtfEur + a.smallCapEtfEur
+  return equity / total * equityRate + a.goldEur / total * GOLD_REAL + a.silverEur / total * SILVER_REAL
+}
+
+/**
+ * Simulate the 36-month phased investment plan month by month.
+ * Phase 1 (m1-12):  100% PMT → IS3S; silver sold at m13 → IS3S
+ * Phase 2 (m13-24): 50% IS3S / 25% IWMO / 25% IWQU
+ * Phase 3 (m25-36): 40% IS3S / 30% IWMO / 20% IWQU / 10% IUSN; €2500 gold sold at m25
+ * Returns snapshots[0..36] where [0] = initial state, [36] = after 36 months.
+ */
+export function simulate36MonthPlan(
+  initialAssets: PlanAssets,
+  preCitizenshipMonthlyPmt: number,
+  postCitizenshipMonthlyPmt: number,
+  citizenshipMonths: number, // months from now until citizenship (0 = already citizen)
+  equityAnnualReturn: number
+): PlanMonthSnapshot[] {
+  const rEq     = equityAnnualReturn / 12
+  const rGold   = GOLD_REAL / 12
+  const rSilver = SILVER_REAL / 12
+
+  let a: PlanAssets = { ...initialAssets }
+  const snapshots: PlanMonthSnapshot[] = []
+  snapshots.push({ month: 0, assets: { ...a }, totalPortfolio: _assetsTotal(a), blendedReturn: _blendedReturn(a, equityAnnualReturn) })
+
+  for (let m = 1; m <= 36; m++) {
+    // 1. Appreciate
+    a.goldEur        *= (1 + rGold)
+    a.silverEur      *= (1 + rSilver)
+    a.sp500Eur       *= (1 + rEq)
+    a.valueEtfEur    *= (1 + rEq)
+    a.momentumEtfEur *= (1 + rEq)
+    a.qualityEtfEur  *= (1 + rEq)
+    a.smallCapEtfEur *= (1 + rEq)
+
+    // 2. One-time events
+    if (m === 13) {
+      a.valueEtfEur += a.silverEur
+      a.silverEur = 0
+    }
+    if (m === 25) {
+      const sale = Math.min(PLAN_GOLD_SALE_EUR, a.goldEur)
+      a.goldEur        -= sale
+      a.valueEtfEur    += sale * 0.40
+      a.momentumEtfEur += sale * 0.30
+      a.qualityEtfEur  += sale * 0.20
+      a.smallCapEtfEur += sale * 0.10
+    }
+
+    // 3. Monthly savings per phase
+    const pmt = m > citizenshipMonths ? postCitizenshipMonthlyPmt : preCitizenshipMonthlyPmt
+    if (m <= 12) {
+      a.valueEtfEur += pmt
+    } else if (m <= 24) {
+      a.valueEtfEur    += pmt * 0.50
+      a.momentumEtfEur += pmt * 0.25
+      a.qualityEtfEur  += pmt * 0.25
+    } else {
+      a.valueEtfEur    += pmt * 0.40
+      a.momentumEtfEur += pmt * 0.30
+      a.qualityEtfEur  += pmt * 0.20
+      a.smallCapEtfEur += pmt * 0.10
+    }
+
+    snapshots.push({
+      month: m,
+      assets: { ...a },
+      totalPortfolio: _assetsTotal(a),
+      blendedReturn: _blendedReturn(a, equityAnnualReturn),
+    })
+  }
+
+  return snapshots
+}
+
+/**
+ * Retirement age using the plan simulation for months 0-36,
+ * then standard FV with the month-36 blended rate for the remainder.
+ */
+export function retirementAgeForScenarioWithPlan(
+  currentAgeYears: number,
+  annualExpensesEur: number,
+  lifeExpectancy: number,
+  planSim: PlanMonthSnapshot[],
+  preCitizenshipMonthlySavings: number,
+  postCitizenshipMonthlySavings: number,
+  citizenshipDate: Date
+): number {
+  const PLAN_MONTHS = 36
+  const now = new Date()
+  const citizenshipMonths = Math.max(
+    0,
+    (citizenshipDate.getFullYear() - now.getFullYear()) * 12 +
+      (citizenshipDate.getMonth() - now.getMonth())
+  )
+
+  const portfolioAt = (targetMonths: number): number => {
+    if (targetMonths <= PLAN_MONTHS) {
+      return planSim[Math.min(Math.round(targetMonths), PLAN_MONTHS)].totalPortfolio
+    }
+    const base = planSim[PLAN_MONTHS]
+    const rate = base.blendedReturn
+    const extra = targetMonths - PLAN_MONTHS
+    const preCitExtra  = Math.max(0, Math.min(extra, citizenshipMonths - PLAN_MONTHS))
+    const postCitExtra = Math.max(0, extra - preCitExtra)
+    const atCit = futureValue(base.totalPortfolio, preCitizenshipMonthlySavings, rate, preCitExtra)
+    return futureValue(atCit, postCitizenshipMonthlySavings, rate, postCitExtra)
+  }
+
+  let lo = currentAgeYears
+  let hi = currentAgeYears + 60
+
+  for (let iter = 0; iter < 80; iter++) {
+    const mid = (lo + hi) / 2
+    const months = Math.round((mid - currentAgeYears) * 12)
+    const portfolio = portfolioAt(months)
+    const horizon = lifeExpectancy - mid
+    const swr = swrForHorizon(Math.max(0, horizon))
+    const fireNum = annualExpensesEur / swr
+    if (portfolio >= fireNum) hi = mid
+    else lo = mid
+    if (hi - lo < 0.05) break
+  }
+  return Math.round((lo + hi) / 2 * 10) / 10
+}
+
+/**
+ * Portfolio trajectory using plan simulation for first 36 months,
+ * then FV with month-36 blended rate after.
+ */
+export function calcPortfolioTrajectoryWithPlan(
+  currentAge: number,
+  maxAge: number,
+  planSims: Record<ReturnScenario, PlanMonthSnapshot[]>,
+  preCitizenshipMonthlySavings: number,
+  postCitizenshipMonthlySavings: number,
+  citizenshipDate: Date
+): TrajectoryPoint[] {
+  const PLAN_MONTHS = 36
+  const now = new Date()
+  const citizenshipMonths = Math.max(
+    0,
+    (citizenshipDate.getFullYear() - now.getFullYear()) * 12 +
+      (citizenshipDate.getMonth() - now.getMonth())
+  )
+
+  const calcScenario = (sim: PlanMonthSnapshot[], age: number): number => {
+    const totalMonths = Math.round((age - currentAge) * 12)
+    if (totalMonths <= PLAN_MONTHS) {
+      return sim[Math.min(totalMonths, PLAN_MONTHS)].totalPortfolio
+    }
+    const base = sim[PLAN_MONTHS]
+    const rate = base.blendedReturn
+    const extra = totalMonths - PLAN_MONTHS
+    const preCitExtra  = Math.max(0, Math.min(extra, citizenshipMonths - PLAN_MONTHS))
+    const postCitExtra = Math.max(0, extra - preCitExtra)
+    const atCit = futureValue(base.totalPortfolio, preCitizenshipMonthlySavings, rate, preCitExtra)
+    return futureValue(atCit, postCitizenshipMonthlySavings, rate, postCitExtra)
+  }
+
+  const points: TrajectoryPoint[] = []
+  for (let age = currentAge; age <= maxAge; age++) {
+    points.push({
+      age,
+      bear: Math.round(calcScenario(planSims.bear, age)),
+      base: Math.round(calcScenario(planSims.base, age)),
+      bull: Math.round(calcScenario(planSims.bull, age)),
+    })
+  }
+  return points
+}
+
 export const RETURN_RATES: Record<ReturnScenario, number> = {
   bear: 0.02,
   base: 0.04,

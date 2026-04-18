@@ -4,12 +4,14 @@ import { useState, useEffect, useMemo, useId, useRef, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import { calcTax, calcTaxCH, grossNeededForNetCH } from '@/lib/tax'
 import {
-  retirementAgeForScenario,
+  retirementAgeForScenarioWithPlan,
   calcSensitivity,
-  calcPortfolioTrajectory,
+  calcPortfolioTrajectoryWithPlan,
+  simulate36MonthPlan,
   swrForHorizon,
   solveForPMT,
   RETURN_RATES,
+  type PlanAssets,
   type SensitivityPoint,
   type TrajectoryPoint,
 } from '@/lib/fire'
@@ -490,6 +492,29 @@ export default function Home() {
     [postCitizenshipNet, rent, foodUtils, familySupport, postCitizenshipTithe, discretionary, annualIrregular]
   )
 
+  // ─── 36-month plan simulations ───────────────────────────────────────────
+  const planSims = useMemo(() => {
+    const now = new Date()
+    const citizenshipMs = Math.max(
+      0,
+      (citizenshipDate.getFullYear() - now.getFullYear()) * 12 +
+        (citizenshipDate.getMonth() - now.getMonth())
+    )
+    const assets: PlanAssets = { goldEur, silverEur, sp500Eur, valueEtfEur, momentumEtfEur, qualityEtfEur, smallCapEtfEur }
+    const run = (rate: number) => simulate36MonthPlan(assets, monthlySavings, postCitizenshipSavings, citizenshipMs, rate)
+    return {
+      bear: run(RETURN_RATES.bear),
+      base: run(RETURN_RATES.base),
+      bull: run(RETURN_RATES.bull),
+    }
+  }, [goldEur, silverEur, sp500Eur, valueEtfEur, momentumEtfEur, qualityEtfEur, smallCapEtfEur, monthlySavings, postCitizenshipSavings, citizenshipDate])
+
+  const postPlanBlendedReturns = useMemo<Record<'bear' | 'base' | 'bull', number>>(() => ({
+    bear: planSims.bear[36].blendedReturn,
+    base: planSims.base[36].blendedReturn,
+    bull: planSims.bull[36].blendedReturn,
+  }), [planSims])
+
   // ─── FIRE number uses retirement expenses (cheaper location) ─────────────
   const retirementMonthly = useMemo(
     () => retirementRent + retirementFoodUtils + retirementFamilySupport + retirementDiscretionary,
@@ -505,19 +530,20 @@ export default function Home() {
   const floorAnnual = floorMonthly * 12
   const floorFireNumber = floorAnnual / swr
 
-  // Retirement ages all 3 scenarios
+  // Retirement ages all 3 scenarios — uses 36-month plan simulation
   const retirementAges = useMemo(() => ({
-    bear: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns.bear),
-    base: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns.base),
-    bull: retirementAgeForScenario(currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns.bull),
-  }), [currentAge, portfolioEur, annualExpenses, lifeExpectancy, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns])
+    bear: retirementAgeForScenarioWithPlan(currentAge, annualExpenses, lifeExpectancy, planSims.bear, monthlySavings, postCitizenshipSavings, citizenshipDate),
+    base: retirementAgeForScenarioWithPlan(currentAge, annualExpenses, lifeExpectancy, planSims.base, monthlySavings, postCitizenshipSavings, citizenshipDate),
+    bull: retirementAgeForScenarioWithPlan(currentAge, annualExpenses, lifeExpectancy, planSims.bull, monthlySavings, postCitizenshipSavings, citizenshipDate),
+  }), [currentAge, annualExpenses, lifeExpectancy, planSims, monthlySavings, postCitizenshipSavings, citizenshipDate])
 
   const currentRetirementAge = retirementAges[scenario]
   const gapYears = +(currentRetirementAge - targetAge).toFixed(1)
 
-  // PMT needed to hit target age
+  // PMT needed from month 36 onward to hit target age
   const monthsToTarget = Math.max(0, (targetAge - currentAge) * 12)
-  const pmt = solveForPMT(fireNumber, portfolioEur, blendedReturns[scenario], monthsToTarget)
+  const monthsAfterPlan = Math.max(0, monthsToTarget - 36)
+  const pmt = solveForPMT(fireNumber, planSims[scenario][36].totalPortfolio, postPlanBlendedReturns[scenario], monthsAfterPlan)
 
   // Required gross (Swiss employed model, post-citizenship)
   const requiredNetMonthly = pmt + totalFixedExpenses
@@ -526,17 +552,15 @@ export default function Home() {
 
   // ─── Portfolio trajectory chart data ─────────────────────────────────────
   const trajectoryData = useMemo<TrajectoryPoint[]>(() => {
-    const maxAge = lifeExpectancy
-    return calcPortfolioTrajectory(
+    return calcPortfolioTrajectoryWithPlan(
       currentAge,
-      maxAge,
-      portfolioEur,
+      lifeExpectancy,
+      planSims,
       monthlySavings,
       postCitizenshipSavings,
       citizenshipDate,
-      blendedReturns,
     )
-  }, [currentAge, lifeExpectancy, targetAge, currentRetirementAge, portfolioEur, monthlySavings, postCitizenshipSavings, citizenshipDate, blendedReturns])
+  }, [currentAge, lifeExpectancy, planSims, monthlySavings, postCitizenshipSavings, citizenshipDate])
 
   const citizenshipAge = useMemo(() => {
     const now = new Date()
@@ -558,7 +582,7 @@ export default function Home() {
 
     return calcSensitivity(
       currentAge,
-      portfolioEur,
+      planSims.base[36].totalPortfolio,
       annualExpenses,
       lifeExpectancy,
       buildSavings,
@@ -566,9 +590,9 @@ export default function Home() {
       postMultiplier,
       [1000, 12000],
       40,
-      blendedReturns,
+      postPlanBlendedReturns,
     )
-  }, [currentAge, portfolioEur, annualExpenses, lifeExpectancy, fxRate, deductibleExpenses, isFirstYear, isSecondYear, tithePercent, rent, foodUtils, familySupport, discretionary, annualIrregular, grossUsd, postCitizenshipGrossUsd, citizenshipDate, blendedReturns])
+  }, [currentAge, planSims, annualExpenses, lifeExpectancy, fxRate, deductibleExpenses, isFirstYear, isSecondYear, tithePercent, rent, foodUtils, familySupport, discretionary, annualIrregular, grossUsd, postCitizenshipGrossUsd, citizenshipDate, postPlanBlendedReturns])
 
   // ─── render ───────────────────────────────────────────────────────────────
   return (
@@ -619,7 +643,7 @@ export default function Home() {
                       {equityEur > 0 && <span><span className="text-blue-400">■</span> Equity {(equityEur / portfolioEur * 100).toFixed(0)}%</span>}
                       {goldEur > 0 && <span><span className="text-amber-400">■</span> Gold {(goldEur / portfolioEur * 100).toFixed(0)}%</span>}
                       {silverEur > 0 && <span><span className="text-gray-400">■</span> Silver {(silverEur / portfolioEur * 100).toFixed(0)}%</span>}
-                      <span className="ml-auto text-gray-600">Blended ({scenario}): {(blendedReturns[scenario] * 100).toFixed(1)}%</span>
+                      <span className="ml-auto text-gray-600">Now: {(blendedReturns[scenario] * 100).toFixed(1)}% → Post-plan: {(postPlanBlendedReturns[scenario] * 100).toFixed(1)}%</span>
                     </div>
                   </>
                 )}
@@ -798,7 +822,7 @@ export default function Home() {
                   ['FIRE number', fmtEur(fireNumber)],
                   [`SWR (${retirementHorizon}yr horizon)`, `${(swr * 100).toFixed(2)}%`],
                   ['Current portfolio', fmtEur(portfolioEur)],
-                  ['Blended real return', `${(blendedReturns[scenario] * 100).toFixed(1)}%`],
+                  ['Blended return (post-plan)', `${(postPlanBlendedReturns[scenario] * 100).toFixed(1)}%`],
                   ['Retirement expenses/yr', fmtEur(annualExpenses)],
                   ['Floor obligation/yr', fmtEur(floorAnnual)],
                   ['Floor FIRE number', fmtEur(floorFireNumber)],
