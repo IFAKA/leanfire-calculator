@@ -24,6 +24,7 @@ const fmtUsd = (n: number, dec = 0) => `$${fmt(n, dec)}`
 
 function NumInput({
   label,
+  hint,
   value,
   onChange,
   prefix,
@@ -32,6 +33,7 @@ function NumInput({
   min = 0,
 }: {
   label: string
+  hint?: string
   value: number
   onChange: (v: number) => void
   prefix?: string
@@ -40,18 +42,43 @@ function NumInput({
   min?: number
 }) {
   const id = useId()
+  const [local, setLocal] = useState(() => String(value))
+  const [editing, setEditing] = useState(false)
+
+  useEffect(() => {
+    if (!editing) setLocal(String(value))
+  }, [value, editing])
+
   return (
     <div className="flex flex-col gap-1">
       <label htmlFor={id} className="text-xs text-gray-400">{label}</label>
+      {hint && <span className="text-xs text-gray-600 -mt-0.5">{hint}</span>}
       <div className="flex items-center gap-1 bg-gray-800 border border-gray-700 rounded px-2 py-1.5 focus-within:border-gray-500 transition-[border-color]">
         {prefix && <span className="text-gray-500 text-sm" aria-hidden>{prefix}</span>}
         <input
           id={id}
           type="number"
-          value={value}
+          value={local}
           step={step}
           min={min}
-          onChange={(e) => onChange(Number(e.target.value))}
+          onFocus={() => {
+            setEditing(true)
+            if (local === '0') setLocal('')
+          }}
+          onBlur={() => {
+            setEditing(false)
+            const n = Number(local)
+            if (local === '' || isNaN(n)) {
+              setLocal(String(value))
+            } else {
+              onChange(n)
+            }
+          }}
+          onChange={(e) => {
+            setLocal(e.target.value)
+            const n = Number(e.target.value)
+            if (e.target.value !== '' && !isNaN(n)) onChange(n)
+          }}
           className="bg-transparent text-white text-sm w-full outline-none tabular min-w-0"
         />
         {suffix && <span className="text-gray-500 text-sm" aria-hidden>{suffix}</span>}
@@ -224,7 +251,7 @@ export default function Home() {
 
             <Section title="Income (USD)">
               <NumInput label="Monthly gross (now)" value={grossUsd} onChange={setGrossUsd} prefix="$" step={100} />
-              <NumInput label="Monthly gross (post-citizenship)" value={postCitizenshipGrossUsd} onChange={setPostCitizenshipGrossUsd} prefix="$" step={100} />
+              <NumInput label="Monthly gross (post-citizenship)" hint="Expected salary after Oct 2026 citizenship" value={postCitizenshipGrossUsd} onChange={setPostCitizenshipGrossUsd} prefix="$" step={100} />
               <div className="flex flex-col gap-1 col-span-2">
                 <label htmlFor="fx-rate" className="text-xs text-gray-400">USD/EUR Rate</label>
                 <div className="flex items-center gap-2">
@@ -254,12 +281,12 @@ export default function Home() {
               <NumInput label="Food + utilities" value={foodUtils} onChange={setFoodUtils} prefix="€" />
               <NumInput label="Family support (Rosario)" value={familySupport} onChange={setFamilySupport} prefix="€" />
               <NumInput label="Tithe" value={tithePercent} onChange={setTithePercent} suffix="% of net" step={1} />
-              <NumInput label="Discretionary" value={discretionary} onChange={setDiscretionary} prefix="€" />
-              <NumInput label="Annual irregular (÷12)" value={annualIrregular} onChange={setAnnualIrregular} prefix="€/yr" step={100} />
+              <NumInput label="Discretionary" hint="Going out, hobbies, misc" value={discretionary} onChange={setDiscretionary} prefix="€" />
+              <NumInput label="Annual irregular (÷12)" hint="Travel, gifts, repairs — yearly total smoothed monthly" value={annualIrregular} onChange={setAnnualIrregular} prefix="€/yr" step={100} />
             </Section>
 
             <Section title="Tax & assumptions" defaultOpen={false}>
-              <NumInput label="Deductible expenses/yr" value={deductibleExpenses} onChange={setDeductibleExpenses} prefix="€/yr" step={100} />
+              <NumInput label="Deductible expenses/yr" hint="Business costs that reduce your taxable income" value={deductibleExpenses} onChange={setDeductibleExpenses} prefix="€/yr" step={100} />
               <div className="flex flex-col gap-1">
                 <label className="text-xs text-gray-400">Autónomo year</label>
                 <div className="flex gap-2">
