@@ -94,3 +94,54 @@ export function grossNeededForNet(
   }
   return (lo + hi) / 2
 }
+
+// Switzerland employed tax model — approximate Zurich canton + federal + social insurance
+// Social insurance: AHV/IV/EO/ALV employee share ≈ 6.4% of gross
+// Income tax: simplified brackets covering federal + cantonal + communal (Zurich, single)
+const CH_SOCIAL_RATE = 0.064
+
+const CH_INCOME_BRACKETS = [
+  { limit: 12000,    rate: 0.00 },
+  { limit: 30000,    rate: 0.08 },
+  { limit: 60000,    rate: 0.20 },
+  { limit: 100000,   rate: 0.26 },
+  { limit: Infinity, rate: 0.32 },
+]
+
+export function calcTaxCH(input: { grossAnnualEur: number }): TaxResult {
+  const { grossAnnualEur } = input
+  const cuotaAnnual = grossAnnualEur * CH_SOCIAL_RATE
+
+  let irpfAnnual = 0
+  let prev = 0
+  for (const bracket of CH_INCOME_BRACKETS) {
+    if (grossAnnualEur <= prev) break
+    const chunk = Math.min(grossAnnualEur, bracket.limit) - prev
+    irpfAnnual += chunk * bracket.rate
+    prev = bracket.limit
+  }
+
+  const netAnnual = grossAnnualEur - cuotaAnnual - irpfAnnual
+  return {
+    grossAnnual: grossAnnualEur,
+    deductibleExpenses: 0,
+    taxableBase: grossAnnualEur,
+    irpfAnnual,
+    cuotaAnnual,
+    netAnnual,
+    netMonthly: netAnnual / 12,
+    effectiveRate: grossAnnualEur > 0 ? (cuotaAnnual + irpfAnnual) / grossAnnualEur : 0,
+  }
+}
+
+export function grossNeededForNetCH(targetNetMonthly: number, tolerance = 1): number {
+  let lo = targetNetMonthly * 12
+  let hi = targetNetMonthly * 12 * 3
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2
+    if (calcTaxCH({ grossAnnualEur: mid }).netMonthly < targetNetMonthly) lo = mid
+    else hi = mid
+    if (hi - lo < tolerance) break
+  }
+  return (lo + hi) / 2
+}
