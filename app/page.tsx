@@ -526,7 +526,7 @@ export default function Home() {
 
   // ─── Portfolio trajectory chart data ─────────────────────────────────────
   const trajectoryData = useMemo<TrajectoryPoint[]>(() => {
-    const maxAge = Math.min(lifeExpectancy, Math.max(targetAge, currentRetirementAge) + 5)
+    const maxAge = lifeExpectancy
     return calcPortfolioTrajectory(
       currentAge,
       maxAge,
