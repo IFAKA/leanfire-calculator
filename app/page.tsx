@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useId } from 'react'
+import { useState, useEffect, useMemo, useId, useRef, useCallback } from 'react'
 import dynamic from 'next/dynamic'
 import { calcTax, grossNeededForNet } from '@/lib/tax'
 import {
@@ -104,6 +104,178 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
   )
 }
 
+// ─── NL interface ──────────────────────────────────────────────────────────
+
+type CalcPatch = {
+  currentAge?: number
+  targetAge?: number
+  lifeExpectancy?: number
+  portfolioEur?: number
+  grossUsd?: number
+  postCitizenshipGrossUsd?: number
+  rent?: number
+  foodUtils?: number
+  familySupport?: number
+  tithePercent?: number
+  discretionary?: number
+  annualIrregular?: number
+  deductibleExpenses?: number
+  isFirstYear?: boolean
+  isSecondYear?: boolean
+  scenario?: 'bear' | 'base' | 'bull'
+}
+
+const PATCH_SCHEMA = {
+  type: 'object',
+  properties: {
+    currentAge:               { type: 'number' },
+    targetAge:                { type: 'number' },
+    lifeExpectancy:           { type: 'number' },
+    portfolioEur:             { type: 'number' },
+    grossUsd:                 { type: 'number' },
+    postCitizenshipGrossUsd:  { type: 'number' },
+    rent:                     { type: 'number' },
+    foodUtils:                { type: 'number' },
+    familySupport:            { type: 'number' },
+    tithePercent:             { type: 'number' },
+    discretionary:            { type: 'number' },
+    annualIrregular:          { type: 'number' },
+    deductibleExpenses:       { type: 'number' },
+    isFirstYear:              { type: 'boolean' },
+    isSecondYear:             { type: 'boolean' },
+    scenario:                 { type: 'string', enum: ['bear', 'base', 'bull'] },
+  },
+  additionalProperties: false,
+} as const
+
+const MODEL_ID = 'Llama-3.1-8B-Instruct-q4f16_1-MLC'
+
+const SYSTEM_PROMPT = `You are a JSON patch extractor for a LeanFIRE retirement calculator.
+The user will describe changes to their financial situation in plain language.
+Output ONLY a JSON object with the fields that should change, using these exact keys:
+currentAge, targetAge, lifeExpectancy, portfolioEur, grossUsd, postCitizenshipGrossUsd,
+rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular,
+deductibleExpenses, isFirstYear, isSecondYear, scenario.
+Only include fields explicitly mentioned. Omit everything else. No explanation, no markdown, just JSON.
+scenario must be "bear", "base", or "bull". isFirstYear/isSecondYear are booleans.
+All money values are numbers (no currency symbols). annualIrregular is yearly total.`
+
+type EngineStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
+  const engineRef = useRef<import('@mlc-ai/web-llm').MLCEngine | null>(null)
+  const [status, setStatus] = useState<EngineStatus>('idle')
+  const [loadProgress, setLoadProgress] = useState(0)
+  const [input, setInput] = useState('')
+  const [processing, setProcessing] = useState(false)
+  const [lastError, setLastError] = useState<string | null>(null)
+
+  const loadEngine = useCallback(async () => {
+    if (engineRef.current || status === 'loading') return
+    setStatus('loading')
+    setLoadProgress(0)
+    setLastError(null)
+    try {
+      const { MLCEngine } = await import('@mlc-ai/web-llm')
+      const engine = new MLCEngine()
+      engine.setInitProgressCallback((p) => {
+        setLoadProgress(Math.round((p.progress ?? 0) * 100))
+      })
+      await engine.reload(MODEL_ID)
+      engineRef.current = engine
+      setStatus('ready')
+    } catch (e) {
+      setLastError(e instanceof Error ? e.message : String(e))
+      setStatus('error')
+    }
+  }, [status])
+
+  const handleSubmit = async () => {
+    if (!input.trim() || processing) return
+    if (!engineRef.current) {
+      await loadEngine()
+      if (!engineRef.current) return
+    }
+    setProcessing(true)
+    setLastError(null)
+    try {
+      const reply = await engineRef.current.chat.completions.create({
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: input.trim() },
+        ],
+        response_format: { type: 'json_object', schema: JSON.stringify(PATCH_SCHEMA) },
+        temperature: 0.1,
+        max_tokens: 256,
+      })
+      const text = reply.choices[0]?.message?.content ?? '{}'
+      const patch: CalcPatch = JSON.parse(text)
+      onPatch(patch)
+      setInput('')
+    } catch (e) {
+      setLastError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  return (
+    <div className="border border-gray-700 rounded-lg p-3 bg-gray-900/60 card-shadow">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs text-gray-400">Natural language</span>
+        {status === 'idle' && (
+          <button
+            onClick={loadEngine}
+            className="text-xs text-blue-400 hover:text-blue-300 border border-gray-700 rounded px-2 py-0.5 transition-[color]"
+          >
+            Load AI (~5 GB)
+          </button>
+        )}
+        {status === 'loading' && (
+          <span className="text-xs text-gray-500">Loading model… {loadProgress}%</span>
+        )}
+        {status === 'ready' && (
+          <span className="text-xs text-emerald-500">Ready</span>
+        )}
+        {status === 'error' && (
+          <button
+            onClick={() => { setStatus('idle') }}
+            className="text-xs text-red-400 hover:text-red-300 border border-gray-700 rounded px-2 py-0.5"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit() }}
+          placeholder='e.g. "my rent went up to €700 and I got a raise to $4200"'
+          disabled={processing || status === 'loading'}
+          className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder:text-gray-600 outline-none focus:border-gray-500 transition-[border-color] disabled:opacity-50"
+        />
+        <button
+          onClick={handleSubmit}
+          disabled={!input.trim() || processing || status === 'loading' || status === 'error'}
+          className="text-xs px-3 py-1.5 rounded border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-40 transition-[border-color,color]"
+        >
+          {processing ? '…' : 'Apply'}
+        </button>
+      </div>
+      {status === 'loading' && (
+        <div className="mt-2 h-1 bg-gray-800 rounded overflow-hidden">
+          <div className="h-full bg-blue-600 transition-[width]" style={{ width: `${loadProgress}%` }} />
+        </div>
+      )}
+      {lastError && (
+        <p className="mt-1.5 text-xs text-red-400 truncate" title={lastError}>{lastError}</p>
+      )}
+    </div>
+  )
+}
+
 // ─── main ──────────────────────────────────────────────────────────────────
 export default function Home() {
   // FX
@@ -142,6 +314,41 @@ export default function Home() {
 
   // Return scenario
   const [scenario, setScenario] = useState<'bear' | 'base' | 'bull'>('base')
+
+  // ─── NL patch handler ─────────────────────────────────────────────────────
+  const handleNLPatch = useCallback((patch: CalcPatch) => {
+    // Resolve ages as a set first to validate invariant before applying any
+    const nextCurrentAge     = patch.currentAge     != null ? Math.round(patch.currentAge)     : currentAge
+    const nextTargetAge      = patch.targetAge      != null ? Math.round(patch.targetAge)      : targetAge
+    const nextLifeExpectancy = patch.lifeExpectancy != null ? Math.round(patch.lifeExpectancy) : lifeExpectancy
+    if (nextCurrentAge < nextTargetAge && nextTargetAge < nextLifeExpectancy) {
+      if (patch.currentAge     != null) setCurrentAge(Math.max(0, nextCurrentAge))
+      if (patch.targetAge      != null) setTargetAge(nextTargetAge)
+      if (patch.lifeExpectancy != null) setLifeExpectancy(nextLifeExpectancy)
+    }
+    if (patch.portfolioEur             != null) setPortfolioEur(Math.max(0, patch.portfolioEur))
+    if (patch.grossUsd                 != null) setGrossUsd(Math.max(0, patch.grossUsd))
+    if (patch.postCitizenshipGrossUsd  != null) setPostCitizenshipGrossUsd(Math.max(0, patch.postCitizenshipGrossUsd))
+    if (patch.rent                     != null) setRent(Math.max(0, patch.rent))
+    if (patch.foodUtils                != null) setFoodUtils(Math.max(0, patch.foodUtils))
+    if (patch.familySupport            != null) setFamilySupport(Math.max(0, patch.familySupport))
+    if (patch.tithePercent             != null) setTithePercent(Math.max(0, Math.min(100, patch.tithePercent)))
+    if (patch.discretionary            != null) setDiscretionary(Math.max(0, patch.discretionary))
+    if (patch.annualIrregular          != null) setAnnualIrregular(Math.max(0, patch.annualIrregular))
+    if (patch.deductibleExpenses       != null) setDeductibleExpenses(Math.max(0, patch.deductibleExpenses))
+    // Mutual exclusivity: isFirstYear wins if both arrive as true
+    if (patch.isFirstYear != null || patch.isSecondYear != null) {
+      const f = patch.isFirstYear  ?? false
+      const s = patch.isSecondYear ?? false
+      if (f) { setIsFirstYear(true);  setIsSecondYear(false) }
+      else if (s) { setIsFirstYear(false); setIsSecondYear(true) }
+      else { setIsFirstYear(false); setIsSecondYear(false) }
+    }
+    if (patch.scenario != null && ['bear', 'base', 'bull'].includes(patch.scenario)) {
+      setScenario(patch.scenario)
+    }
+    // fxRate and fxManual are intentionally never touched
+  }, [currentAge, targetAge, lifeExpectancy])
 
   // ─── derived: tax + net income ───────────────────────────────────────────
   const taxResult = useMemo(() => {
@@ -242,6 +449,7 @@ export default function Home() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* ─── LEFT: INPUTS ─────────────────────────────────────────────── */}
           <div className="flex flex-col gap-4">
+            <NLPromptBar onPatch={handleNLPatch} />
             <Section title="Current state">
               <NumInput label="Current age" value={currentAge} onChange={setCurrentAge} suffix="yrs" />
               <NumInput label="Target retirement age" value={targetAge} onChange={setTargetAge} suffix="yrs" />
