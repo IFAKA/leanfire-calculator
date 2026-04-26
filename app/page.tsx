@@ -347,27 +347,23 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
     }
   }
 
-  const handleConfirm = () => {
-    if (pending) {
-      onPatch(pending.patch)
-      setPending(null)
-      setInput('')
-    }
-  }
-
-  const handleCancel = () => {
-    setPending(null)
-  }
-
   useEffect(() => {
     if (!pending) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Enter') { e.preventDefault(); handleConfirm() }
-      if (e.key === 'Escape') { e.preventDefault(); handleCancel() }
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        onPatch(pending.patch)
+        setPending(null)
+        setInput('')
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setPending(null)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [pending])
+  }, [pending, onPatch])
 
   return (
     <div className="border border-gray-700 rounded-lg p-3 bg-gray-900/60 card-shadow">
@@ -400,7 +396,7 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
         <input
           type="text"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => { setInput(e.target.value); setLastError(null) }}
           onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit() }}
           placeholder='e.g. "my rent went up to €700 and I got a raise to $4200"'
           disabled={processing || status === 'loading' || pending !== null}
@@ -429,7 +425,7 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
           </p>
           <div className="space-y-0.5 max-h-48 overflow-y-auto pr-1">
             {Object.entries(pending.patch)
-              .filter(([k, v]) => v != null)
+              .filter(([, v]) => v != null)
               .map(([key, value]) => {
                 const meta = FIELD_META[key]
                 if (!meta) return null
@@ -447,13 +443,13 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
           </div>
           <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-700/60">
             <button
-              onClick={handleCancel}
+              onClick={() => setPending(null)}
               className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded border border-gray-700 transition-[color]"
             >
               Cancel (Esc)
             </button>
             <button
-              onClick={handleConfirm}
+              onClick={() => { if (pending) { onPatch(pending.patch); setPending(null); setInput('') } }}
               className="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-1 rounded border border-emerald-800 bg-emerald-950/30 transition-[color,background-color]"
             >
               Confirm (Enter)
