@@ -347,6 +347,28 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
     }
   }
 
+  const handleConfirm = () => {
+    if (pending) {
+      onPatch(pending.patch)
+      setPending(null)
+      setInput('')
+    }
+  }
+
+  const handleCancel = () => {
+    setPending(null)
+  }
+
+  useEffect(() => {
+    if (!pending) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') { e.preventDefault(); handleConfirm() }
+      if (e.key === 'Escape') { e.preventDefault(); handleCancel() }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [pending])
+
   return (
     <div className="border border-gray-700 rounded-lg p-3 bg-gray-900/60 card-shadow">
       <div className="flex items-center justify-between mb-2">
@@ -381,12 +403,12 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit() }}
           placeholder='e.g. "my rent went up to €700 and I got a raise to $4200"'
-          disabled={processing || status === 'loading'}
+          disabled={processing || status === 'loading' || pending !== null}
           className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder:text-gray-600 outline-none focus:border-gray-500 transition-[border-color] disabled:opacity-50"
         />
         <button
           onClick={handleSubmit}
-          disabled={!input.trim() || processing || status === 'loading' || status === 'error'}
+          disabled={!input.trim() || processing || status === 'loading' || status === 'error' || pending !== null}
           className="text-xs px-3 py-1.5 rounded border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-40 transition-[border-color,color]"
         >
           {processing ? '…' : 'Apply'}
@@ -399,6 +421,45 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
       )}
       {lastError && (
         <p className="mt-1.5 text-xs text-red-400 truncate" title={lastError}>{lastError}</p>
+      )}
+      {pending && (
+        <div className="mt-2 border-t border-gray-700 pt-2 animate-in">
+          <p className="text-xs text-gray-400 mb-1.5">
+            AI suggests {Object.keys(pending.patch).filter(k => pending.patch[k as keyof CalcPatch] != null).length} change{Object.keys(pending.patch).filter(k => pending.patch[k as keyof CalcPatch] != null).length > 1 ? 's' : ''}
+          </p>
+          <div className="space-y-0.5 max-h-48 overflow-y-auto pr-1">
+            {Object.entries(pending.patch)
+              .filter(([k, v]) => v != null)
+              .map(([key, value]) => {
+                const meta = FIELD_META[key]
+                if (!meta) return null
+                const oldVal = meta.format ? meta.format(pending.currentValues[key]) : String(pending.currentValues[key])
+                const newVal = meta.format ? meta.format(value) : String(value)
+                return (
+                  <div key={key} className="flex items-center text-xs gap-1.5">
+                    <span className="text-gray-400 w-36 shrink-0 truncate" title={meta.label}>{meta.label}</span>
+                    <span className="text-gray-500 tabular">{oldVal}</span>
+                    <span className="text-gray-600" aria-hidden>→</span>
+                    <span className="text-emerald-400 font-medium tabular">{newVal}</span>
+                  </div>
+                )
+              })}
+          </div>
+          <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-700/60">
+            <button
+              onClick={handleCancel}
+              className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded border border-gray-700 transition-[color]"
+            >
+              Cancel (Esc)
+            </button>
+            <button
+              onClick={handleConfirm}
+              className="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-1 rounded border border-emerald-800 bg-emerald-950/30 transition-[color,background-color]"
+            >
+              Confirm (Enter)
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
