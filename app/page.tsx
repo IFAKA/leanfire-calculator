@@ -223,6 +223,33 @@ const PATCH_SCHEMA = {
 const MODEL_ID = 'Llama-3.1-8B-Instruct-q4f16_1-MLC'
 const WEBLLM_CACHE_KEY = `webllm-cached-${MODEL_ID}`
 
+const FIELD_META: Record<string, { label: string; format?: (v: unknown) => string }> = {
+  currentAge:               { label: 'Current age',              format: v => `${v} yrs` },
+  targetAge:                { label: 'Target retirement age',    format: v => `${v} yrs` },
+  lifeExpectancy:           { label: 'Life expectancy',          format: v => `${v} yrs` },
+  portfolioEur:             { label: 'Portfolio',                format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  grossUsd:                 { label: 'Monthly gross (now)',      format: v => `$${Number(v).toLocaleString('es-ES')}` },
+  postCitizenshipGrossUsd:  { label: 'Monthly gross (post-cit.)',format: v => `$${Number(v).toLocaleString('es-ES')}` },
+  rent:                     { label: 'Rent',                     format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  foodUtils:                { label: 'Food + utilities',         format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  familySupport:            { label: 'Family support',           format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  tithePercent:             { label: 'Tithe',                    format: v => `${v}%` },
+  discretionary:            { label: 'Discretionary',            format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  annualIrregular:          { label: 'Annual irregular',         format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  deductibleExpenses:       { label: 'Deductible expenses/yr',   format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  isFirstYear:              { label: 'Autónomo year',            format: v => v ? '1st yr' : 'Normal' },
+  isSecondYear:             { label: 'Autónomo year',            format: v => v ? '2nd yr' : 'Normal' },
+  scenario:                 { label: 'Scenario',                 format: v => String(v).charAt(0).toUpperCase() + String(v).slice(1) },
+  retirementRent:           { label: 'Retirement rent',          format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  retirementFoodUtils:      { label: 'Retirement food + utils',  format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  retirementFamilySupport:  { label: 'Retirement family support',format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  retirementDiscretionary:  { label: 'Retirement discretionary', format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chRent:                   { label: 'CH rent',                  format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chFoodUtils:              { label: 'CH food + utilities',      format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chHealthInsurance:        { label: 'CH health insurance',      format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chDiscretionary:          { label: 'CH discretionary',         format: v => `€${Number(v).toLocaleString('es-ES')}` },
+}
+
 const SYSTEM_PROMPT = `You are a JSON patch extractor for a LeanFIRE retirement calculator.
 The user will describe changes to their financial situation in plain language.
 Output ONLY a JSON object with the fields that should change, using these exact keys:
@@ -240,7 +267,12 @@ chRent/chFoodUtils/chHealthInsurance/chDiscretionary are expenses while working 
 
 type EngineStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
+type PendingPatch = {
+  patch: CalcPatch
+  currentValues: Record<string, unknown>
+}
+
+function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) => void; currentValues: Record<string, unknown> }) {
   const engineRef = useRef<import('@mlc-ai/web-llm').MLCEngine | null>(null)
   const [status, setStatus] = useState<EngineStatus>('idle')
   const [loadProgress, setLoadProgress] = useState(0)
@@ -248,6 +280,7 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
   const [processing, setProcessing] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
   const didAutoLoad = useRef(false)
+  const [pending, setPending] = useState<PendingPatch | null>(null)
 
   const loadEngine = useCallback(async () => {
     if (engineRef.current || status === 'loading') return
@@ -300,14 +333,37 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
       })
       const text = reply.choices[0]?.message?.content ?? '{}'
       const patch: CalcPatch = JSON.parse(text)
-      onPatch(patch)
-      setInput('')
+      const keys = Object.keys(patch).filter(k => patch[k as keyof CalcPatch] != null)
+      if (keys.length === 0) {
+        // No recognized fields — keep input for user to retype
+        setLastError('No changes detected. Try rephrasing your request.')
+      } else {
+        setPending({ patch, currentValues })
+      }
     } catch (e) {
       setLastError(e instanceof Error ? e.message : String(e))
     } finally {
       setProcessing(false)
     }
   }
+
+  useEffect(() => {
+    if (!pending) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        onPatch(pending.patch)
+        setPending(null)
+        setInput('')
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setPending(null)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [pending, onPatch])
 
   return (
     <div className="border border-gray-700 rounded-lg p-3 bg-gray-900/60 card-shadow">
@@ -340,15 +396,15 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
         <input
           type="text"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => { setInput(e.target.value); setLastError(null) }}
           onKeyDown={(e) => { if (e.key === 'Enter') handleSubmit() }}
           placeholder='e.g. "my rent went up to €700 and I got a raise to $4200"'
-          disabled={processing || status === 'loading'}
+          disabled={processing || status === 'loading' || pending !== null}
           className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-white placeholder:text-gray-600 outline-none focus:border-gray-500 transition-[border-color] disabled:opacity-50"
         />
         <button
           onClick={handleSubmit}
-          disabled={!input.trim() || processing || status === 'loading' || status === 'error'}
+          disabled={!input.trim() || processing || status === 'loading' || status === 'error' || pending !== null}
           className="text-xs px-3 py-1.5 rounded border border-gray-700 text-gray-300 hover:border-gray-500 hover:text-white disabled:opacity-40 transition-[border-color,color]"
         >
           {processing ? '…' : 'Apply'}
@@ -361,6 +417,45 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
       )}
       {lastError && (
         <p className="mt-1.5 text-xs text-red-400 truncate" title={lastError}>{lastError}</p>
+      )}
+      {pending && (
+        <div className="mt-2 border-t border-gray-700 pt-2 animate-in">
+          <p className="text-xs text-gray-400 mb-1.5">
+            AI suggests {Object.keys(pending.patch).filter(k => pending.patch[k as keyof CalcPatch] != null).length} change{Object.keys(pending.patch).filter(k => pending.patch[k as keyof CalcPatch] != null).length > 1 ? 's' : ''}
+          </p>
+          <div className="space-y-0.5 max-h-48 overflow-y-auto pr-1">
+            {Object.entries(pending.patch)
+              .filter(([, v]) => v != null)
+              .map(([key, value]) => {
+                const meta = FIELD_META[key]
+                if (!meta) return null
+                const oldVal = meta.format ? meta.format(pending.currentValues[key]) : String(pending.currentValues[key])
+                const newVal = meta.format ? meta.format(value) : String(value)
+                return (
+                  <div key={key} className="flex items-center text-xs gap-1.5">
+                    <span className="text-gray-400 w-36 shrink-0 truncate" title={meta.label}>{meta.label}</span>
+                    <span className="text-gray-500 tabular">{oldVal}</span>
+                    <span className="text-gray-600" aria-hidden>→</span>
+                    <span className="text-emerald-400 font-medium tabular">{newVal}</span>
+                  </div>
+                )
+              })}
+          </div>
+          <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-gray-700/60">
+            <button
+              onClick={() => setPending(null)}
+              className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded border border-gray-700 transition-[color]"
+            >
+              Cancel (Esc)
+            </button>
+            <button
+              onClick={() => { if (pending) { onPatch(pending.patch); setPending(null); setInput('') } }}
+              className="text-xs text-emerald-300 hover:text-emerald-200 px-3 py-1 rounded border border-emerald-800 bg-emerald-950/30 transition-[color,background-color]"
+            >
+              Confirm (Enter)
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -439,6 +534,22 @@ export default function Home() {
 
   // 36-month plan tracking
   const [currentPlanMonth, setCurrentPlanMonth] = useLS('lf/currentPlanMonth', 1)
+
+  const currentValues = useMemo<Record<string, unknown>>(() => ({
+    currentAge, targetAge, lifeExpectancy, portfolioEur,
+    grossUsd, postCitizenshipGrossUsd,
+    rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular, deductibleExpenses,
+    isFirstYear, isSecondYear, scenario,
+    retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary,
+    chRent, chFoodUtils, chHealthInsurance, chDiscretionary,
+  }), [
+    currentAge, targetAge, lifeExpectancy, portfolioEur,
+    grossUsd, postCitizenshipGrossUsd,
+    rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular, deductibleExpenses,
+    isFirstYear, isSecondYear, scenario,
+    retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary,
+    chRent, chFoodUtils, chHealthInsurance, chDiscretionary,
+  ])
 
   const [highlightedFields, setHighlightedFields] = useState<Set<string>>(new Set())
 
@@ -657,7 +768,7 @@ export default function Home() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* ─── LEFT: INPUTS ─────────────────────────────────────────────── */}
           <div className="flex flex-col gap-4">
-            <NLPromptBar onPatch={handleNLPatch} />
+            <NLPromptBar onPatch={handleNLPatch} currentValues={currentValues} />
 
             <Section title="Current state" id="current-state">
               <NumInput label="Current age" value={currentAge} onChange={setCurrentAge} suffix="yrs" highlighted={highlightedFields.has('currentAge')} />
