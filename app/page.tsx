@@ -473,6 +473,22 @@ export default function Home() {
   // 36-month plan tracking
   const [currentPlanMonth, setCurrentPlanMonth] = useLS('lf/currentPlanMonth', 1)
 
+  const currentValues = useMemo<Record<string, unknown>>(() => ({
+    currentAge, targetAge, lifeExpectancy, portfolioEur,
+    grossUsd, postCitizenshipGrossUsd,
+    rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular, deductibleExpenses,
+    isFirstYear, isSecondYear, scenario,
+    retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary,
+    chRent, chFoodUtils, chHealthInsurance, chDiscretionary,
+  }), [
+    currentAge, targetAge, lifeExpectancy, portfolioEur,
+    grossUsd, postCitizenshipGrossUsd,
+    rent, foodUtils, familySupport, tithePercent, discretionary, annualIrregular, deductibleExpenses,
+    isFirstYear, isSecondYear, scenario,
+    retirementRent, retirementFoodUtils, retirementFamilySupport, retirementDiscretionary,
+    chRent, chFoodUtils, chHealthInsurance, chDiscretionary,
+  ])
+
   const [highlightedFields, setHighlightedFields] = useState<Set<string>>(new Set())
 
   // ─── NL patch handler ─────────────────────────────────────────────────────
@@ -690,7 +706,7 @@ export default function Home() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* ─── LEFT: INPUTS ─────────────────────────────────────────────── */}
           <div className="flex flex-col gap-4">
-            <NLPromptBar onPatch={handleNLPatch} />
+            <NLPromptBar onPatch={handleNLPatch} currentValues={currentValues} />
 
             <Section title="Current state" id="current-state">
               <NumInput label="Current age" value={currentAge} onChange={setCurrentAge} suffix="yrs" highlighted={highlightedFields.has('currentAge')} />
