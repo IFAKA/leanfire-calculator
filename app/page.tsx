@@ -223,6 +223,33 @@ const PATCH_SCHEMA = {
 const MODEL_ID = 'Llama-3.1-8B-Instruct-q4f16_1-MLC'
 const WEBLLM_CACHE_KEY = `webllm-cached-${MODEL_ID}`
 
+const FIELD_META: Record<string, { label: string; format?: (v: unknown) => string }> = {
+  currentAge:               { label: 'Current age',              format: v => `${v} yrs` },
+  targetAge:                { label: 'Target retirement age',    format: v => `${v} yrs` },
+  lifeExpectancy:           { label: 'Life expectancy',          format: v => `${v} yrs` },
+  portfolioEur:             { label: 'Portfolio',                format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  grossUsd:                 { label: 'Monthly gross (now)',      format: v => `$${Number(v).toLocaleString('es-ES')}` },
+  postCitizenshipGrossUsd:  { label: 'Monthly gross (post-cit.)',format: v => `$${Number(v).toLocaleString('es-ES')}` },
+  rent:                     { label: 'Rent',                     format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  foodUtils:                { label: 'Food + utilities',         format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  familySupport:            { label: 'Family support',           format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  tithePercent:             { label: 'Tithe',                    format: v => `${v}%` },
+  discretionary:            { label: 'Discretionary',            format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  annualIrregular:          { label: 'Annual irregular',         format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  deductibleExpenses:       { label: 'Deductible expenses/yr',   format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  isFirstYear:              { label: 'Autónomo year',            format: v => v ? '1st yr' : 'Normal' },
+  isSecondYear:             { label: 'Autónomo year',            format: v => v ? '2nd yr' : 'Normal' },
+  scenario:                 { label: 'Scenario',                 format: v => String(v).charAt(0).toUpperCase() + String(v).slice(1) },
+  retirementRent:           { label: 'Retirement rent',          format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  retirementFoodUtils:      { label: 'Retirement food + utils',  format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  retirementFamilySupport:  { label: 'Retirement family support',format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  retirementDiscretionary:  { label: 'Retirement discretionary', format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chRent:                   { label: 'CH rent',                  format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chFoodUtils:              { label: 'CH food + utilities',      format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chHealthInsurance:        { label: 'CH health insurance',      format: v => `€${Number(v).toLocaleString('es-ES')}` },
+  chDiscretionary:          { label: 'CH discretionary',         format: v => `€${Number(v).toLocaleString('es-ES')}` },
+}
+
 const SYSTEM_PROMPT = `You are a JSON patch extractor for a LeanFIRE retirement calculator.
 The user will describe changes to their financial situation in plain language.
 Output ONLY a JSON object with the fields that should change, using these exact keys:
@@ -240,7 +267,12 @@ chRent/chFoodUtils/chHealthInsurance/chDiscretionary are expenses while working 
 
 type EngineStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
+type PendingPatch = {
+  patch: CalcPatch
+  currentValues: Record<string, unknown>
+}
+
+function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) => void; currentValues: Record<string, unknown> }) {
   const engineRef = useRef<import('@mlc-ai/web-llm').MLCEngine | null>(null)
   const [status, setStatus] = useState<EngineStatus>('idle')
   const [loadProgress, setLoadProgress] = useState(0)
@@ -248,6 +280,7 @@ function NLPromptBar({ onPatch }: { onPatch: (patch: CalcPatch) => void }) {
   const [processing, setProcessing] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
   const didAutoLoad = useRef(false)
+  const [pending, setPending] = useState<PendingPatch | null>(null)
 
   const loadEngine = useCallback(async () => {
     if (engineRef.current || status === 'loading') return
