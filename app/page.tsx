@@ -333,8 +333,13 @@ function NLPromptBar({ onPatch, currentValues }: { onPatch: (patch: CalcPatch) =
       })
       const text = reply.choices[0]?.message?.content ?? '{}'
       const patch: CalcPatch = JSON.parse(text)
-      onPatch(patch)
-      setInput('')
+      const keys = Object.keys(patch).filter(k => patch[k as keyof CalcPatch] != null)
+      if (keys.length === 0) {
+        // No recognized fields — keep input for user to retype
+        setLastError('No changes detected. Try rephrasing your request.')
+      } else {
+        setPending({ patch, currentValues })
+      }
     } catch (e) {
       setLastError(e instanceof Error ? e.message : String(e))
     } finally {
